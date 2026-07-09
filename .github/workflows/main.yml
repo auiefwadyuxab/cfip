@@ -1,0 +1,50 @@
+name: CF 优选节点极速聚合
+
+on:
+  schedule:
+    # 每天北京时间零点开始，每隔30分钟执行一次。北京时间 00:00 对应 UTC 16:00
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # 允许在 GitHub 控制台手动点击触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 运行环境
+        uses: actions/setup-python@v5
+        with:
+          python-level: '3.10'
+
+      - name: 安装必要依赖 requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests urllib3
+
+      - name: 启动极速拉取去重聚合脚本
+        env:
+          # 从 Github Actions Secrets 动态注入变量 (完美防敏感泄露)
+          WILD_SUB_URL: ${{ secrets.WILD_SUB_URL }}
+          WILD_SUB_HOST: ${{ secrets.WILD_SUB_HOST }}
+        run: |
+          python juhe.py
+
+      - name: 提交并推送到代码仓库
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 检测文件变更
+          git add juhe.txt log.txt
+          
+          if git diff --cached --quiet; then
+            echo "没有发现节点数据和日志发生变更，跳过本次推送。"
+          else
+            git commit -m "自动更新: 聚合数据及日志更新 [$(date -d '8 hours' +'%Y-%m-%d %H:%M:%S') Beijing]"
+            git push origin HEAD:${{ github.ref }}
+          fi
