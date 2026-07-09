@@ -2,9 +2,10 @@ name: CF 优选节点极速聚合
 
 on:
   schedule:
-    # 每天北京时间零点开始，每隔30分钟执行一次。北京时间 00:00 对应 UTC 16:00
+    # 每天北京时间零点开始，每半小时自动运行一次。
+    # 对应 UTC 时间的 16:00
     - cron: '*/30 * * * *'
-  workflow_dispatch: # 允许在 GitHub 控制台手动点击触发
+  workflow_dispatch: # 允许在 GitHub Action 控制台手动触发任务
 
 jobs:
   build:
@@ -19,18 +20,17 @@ jobs:
       - name: 安装 Python 运行环境
         uses: actions/setup-python@v5
         with:
-          python-level: '3.10'
+          python-version: '3.10'
 
-      - name: 安装必要依赖 requests
+      - name: 安装必要依赖 requests 和 urllib3
         run: |
           python -m pip install --upgrade pip
           pip install requests urllib3
 
-      - name: 启动极速拉取去重聚合脚本
+      - name: 启动聚合抓取去重脚本
         env:
-          # 从 Github Actions Secrets 动态注入变量 (完美防敏感泄露)
+          # 从 Github Actions Secrets 动态注入聚合链接
           WILD_SUB_URL: ${{ secrets.WILD_SUB_URL }}
-          WILD_SUB_HOST: ${{ secrets.WILD_SUB_HOST }}
         run: |
           python juhe.py
 
@@ -39,7 +39,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 检测文件变更
+          # 跟踪最终生成的去重文件和追加的日志
           git add juhe.txt log.txt
           
           if git diff --cached --quiet; then
