@@ -29,7 +29,7 @@ jobs:
 
       - name: 启动聚合抓取去重脚本
         env:
-          # 从 Github Actions Secrets 动态注入聚合链接 (完美防敏感泄露)
+          # 从 Github Actions Secrets 动态注入聚合链接
           WILD_SUB_URL: ${{ secrets.WILD_SUB_URL }}
         run: |
           python juhe.py
