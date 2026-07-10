@@ -2,8 +2,7 @@ name: CF 优选节点极速聚合
 
 on:
   schedule:
-    # 每天北京时间零点开始，每半小时自动运行一次。
-    # 对应 UTC 时间的 16:00
+    # 每半小时自动运行一次。由于 GitHub Cron 机制的延迟，实际运行可能有 10-60 分钟不等的延迟
     - cron: '*/30 * * * *'
   workflow_dispatch: # 允许在 GitHub Action 控制台手动触发任务
 
@@ -12,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    timeout-minutes: 30 # 设置 30 分钟防死锁硬超时
 
     steps:
       - name: 检出仓库代码
