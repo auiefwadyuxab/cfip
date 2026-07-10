@@ -10,6 +10,7 @@ import math
 import urllib3
 import requests
 import threading
+import ipaddress
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, unquote
@@ -87,7 +88,6 @@ ALL_SOURCES = [
 # 从 GitHub 环境变量中提取 Wild 聚合订阅链接
 WILD_SUB_URL = os.environ.get("WILD_SUB_URL", "").strip()
 
-# 自动从 WILD_SUB_URL 中安全提取 Host，防止由于变更导致脚本失效
 WILD_SUB_HOST = ""
 if WILD_SUB_URL:
     try:
@@ -146,7 +146,6 @@ substring_block_keywords = [
 ipv4_regex = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
 html_tag_regex = re.compile(r'<[^>]+>')
 
-
 # ==================== 5. 核心辅助清洗与解析模块 ====================
 def clean_comment_and_spaces(text_line):
     """彻底过滤并删除行内的 # 符号及其右边备注"""
@@ -154,9 +153,24 @@ def clean_comment_and_spaces(text_line):
         text_line = text_line.split('#')[0]
     return text_line.strip()
 
+def generate_random_prefix(length=10):
+    """随机生成包含数字和小写字母的前缀以替代泛域名通配符"""
+    chars = string.ascii_lowercase + string.digits
+    return ''.join(random.choices(chars, k=length))
+
+def calculate_entropy(s):
+    """计算字符串的信息熵，用于评估域名的随机无规律程度"""
+    if not s:
+        return 0
+    entropy = 0
+    for x in range(256):
+        p_x = float(s.count(chr(x))) / len(s)
+        if p_x > 0:
+            entropy += - p_x * math.log(p_x, 2)
+    return entropy
 
 def extract_pure_ip_and_port(ip_port):
-    """提取主机名与对应端口，彻底移除 IPv6 [ ]"""
+    """提取主机名与对应端口，严格对 IPv6 进行去中括号处理"""
     ip_port = ip_port.strip()
     ip_port = re.sub(r'\s+', ' ', ip_port)
 
@@ -191,15 +205,13 @@ def extract_pure_ip_and_port(ip_port):
 
     return ip_port, "443"
 
-
 def is_ip(address):
-    """验证是否属于标准 IP 结构"""
+    """验证是否属于标准 IP 结构 (IPv4 或 IPv6)"""
     if ipv4_regex.match(address):
         return True
     if ':' in address:
         return True
     return False
-
 
 def is_valid_domain(hostname):
     """审查域名格式的合法性"""
@@ -211,9 +223,8 @@ def is_valid_domain(hostname):
         return False
     return bool(re.match(r'^[a-zA-Z0-9][-a-zA-Z0-9.]*[a-zA-Z0-9]$', hostname))
 
-
 def parse_sharing_link(line):
-    """解码和清洗 Vmess/Vless/Trojan/SS 分享链接"""
+    """解码和清洗 Vmess/Vless/Trojan/SS 分享链接，提取主机名/端口"""
     line = line.strip()
     if not line:
         return None
@@ -247,7 +258,6 @@ def parse_sharing_link(line):
         return None
 
     return line
-
 
 def robust_decode_base64(raw_content):
     """Base64 自愈解码器"""
@@ -295,7 +305,6 @@ def robust_decode_base64(raw_content):
 
     return raw_content
 
-
 def parse_content_adaptively(text):
     """自适应内容解析器"""
     extracted_lines = []
@@ -341,13 +350,8 @@ def parse_content_adaptively(text):
 
     return extracted_lines
 
-
-def fetch_single_url(session, url, custom_host=None, is_wild_source=False):
-    """网络请求主引擎，带有大聚合超时防护与5秒盾抛弃机制"""
-    local_lines = []
-    parsed_url = urlparse(url)
-    filename = parsed_url.path.split('/')[-1] or parsed_url.netloc
-
+def fetch_single_url_raw(session, url, custom_host=None, is_wild_source=False):
+    """拉取原始响应内容与格式（提供给 Wild 统计模块使用），保障大聚合不丢包"""
     headers = {
         'User-Agent': 'v2rayNG/2.2.6',
         'Connection': 'close',
@@ -356,7 +360,6 @@ def fetch_single_url(session, url, custom_host=None, is_wild_source=False):
     if custom_host:
         headers['Host'] = custom_host
 
-    # 针对 Wild 大聚合专门设置的超长读取超时（15s/90s），其余普通源则 2s/5s 极速阻断防止拖延
     timeout_param = (15.0, 90.0) if is_wild_source else (2.0, 5.0)
 
     try:
@@ -373,21 +376,28 @@ def fetch_single_url(session, url, custom_host=None, is_wild_source=False):
             # CF 阻断挑战页屏蔽
             if 'text/html' in content_type or text_preview.startswith('<!doctype html') or text_preview.startswith('<html'):
                 with print_lock:
-                    print(f"⚠️ [拦截] 源 {filename} 触发了 Cloudflare 防火墙，已自动丢弃 HTML 包体。")
-                return url, []
-
-            response.encoding = 'utf-8'
-            local_lines = parse_content_adaptively(response.text)
-            with print_lock:
-                print(f"[下载成功] -> {filename} (洗净出 {len(local_lines)} 条)")
+                    print(f"⚠️ [拦截] 源触发了 Cloudflare 质询，已自动丢弃 HTML 包体。")
+                return ""
+            return response.text
         else:
             with print_lock:
-                print(f"[响应状态异常 {response.status_code}] -> {filename}")
+                print(f"[响应状态异常 {response.status_code}] -> {urlparse(url).netloc}")
     except Exception as e:
         with print_lock:
-            print(f"[快速阻断/离线] -> {filename} ({type(e).__name__})")
-    return url, local_lines
+            print(f"[快速阻断/离线] -> {urlparse(url).netloc} ({type(e).__name__})")
+    return ""
 
+def fetch_single_url(session, url, custom_host=None, is_wild_source=False):
+    """网络请求主引擎，带有大聚合超时防护"""
+    parsed_url = urlparse(url)
+    filename = parsed_url.path.split('/')[-1] or parsed_url.netloc
+    raw_text = fetch_single_url_raw(session, url, custom_host, is_wild_source)
+    if raw_text:
+        local_lines = parse_content_adaptively(raw_text)
+        with print_lock:
+            print(f"[下载成功] -> {filename} (洗净出 {len(local_lines)} 条)")
+        return url, local_lines
+    return url, []
 
 # ==================== 6. 主程序与双重日志调度引擎 ====================
 def main():
@@ -401,7 +411,7 @@ def main():
     raw_results = []
     session = requests.Session()
 
-    # 13个源提供商分布追踪字典 (1.wild 原版完美抄录)
+    # 13个源提供商分布追踪字典 (完美精准检测)
     source_mapping = {
         "CM": ["sub.cmliussss.net", "[cm]", "cmliussss"],
         "Mia": ["sub.mia.xx.kg", "[mia]", "@miachatchannel"],
@@ -425,44 +435,63 @@ def main():
     print(f"📡 极速无缝并轨聚合去重开启 | 启动时间: {time_str}")
     print(f"==========================================")
 
-    # 【第一阶段】执行 Wild 并即时输出专属订阅器日志
     wild_results_cache = []
     if WILD_SUB_URL:
         print(f"📡 [第一阶段] 正在模拟 v2rayNG 客户端连接并请求 Wild 订阅节点...")
-        _, fetched_lines = fetch_single_url(session, WILD_SUB_URL, WILD_SUB_HOST, is_wild_source=True)
+        raw_wild_text = fetch_single_url_raw(session, WILD_SUB_URL, WILD_SUB_HOST, is_wild_source=True)
         
-        if fetched_lines:
-            wild_results_cache = fetched_lines
-            print("✅ 订阅源数据已成功拉取并进入缓存！")
-            print("⚡ 开始进行智能 Base64 解码并统计 Wild 订阅器源贡献度...")
+        if raw_wild_text:
+            print("✅ 订阅源数据已成功拉取，进入高精确原始比对清洗阶段...")
+            decoded_wild_content = robust_decode_base64(raw_wild_text)
             
-            # 立即进行逆向映射统计
+            # 直接在 Base64 解码后且未破坏节点原本特征(协议、备注、参数)的原始行上进行精准分类统计
+            wild_lines = decoded_wild_content.splitlines()
             temp_seen = set()
-            for line in wild_results_cache:
+            
+            for line in wild_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # 分流源检测
                 detected_source = "未知常规优选源"
                 line_decoded = unquote(line).lower()
                 for source_name, keywords in source_mapping.items():
                     if any(kw in line_decoded for kw in keywords):
                         detected_source = source_name
                         break
+                
                 wild_raw_counter[detected_source] += 1
                 
-                # 评估临时去重后该订阅器的保留数
-                line_clean = clean_comment_and_spaces(line)
-                host, port = extract_pure_ip_and_port(line_clean)
-                if host:
-                    standard_format = f"{host.lower()} {port}"
-                    if standard_format not in temp_seen:
-                        temp_seen.add(standard_format)
-                        wild_unique_counter[detected_source] += 1
+                # 执行深度清洗
+                parsed_node = parse_sharing_link(line)
+                if parsed_node:
+                    cleaned_line = clean_comment_and_spaces(parsed_node)
+                    if cleaned_line:
+                        host, port = extract_pure_ip_and_port(cleaned_line)
+                        if host:
+                            # 规范化 IP
+                            if is_ip(host):
+                                try:
+                                    host = ipaddress.ip_address(host).compressed
+                                except ValueError:
+                                    pass
+                            else:
+                                host = host.lower()
+                                
+                            standard_format = f"{host} {port}"
+                            if host not in exact_block_hosts and not any(kw in host for kw in substring_block_keywords):
+                                wild_results_cache.append(cleaned_line)
+                                if standard_format not in temp_seen:
+                                    temp_seen.add(standard_format)
+                                    wild_unique_counter[detected_source] += 1
             
-            # 【重要】拉取成功后直接缓存并打印原 wild 脚本的原生日志（不放在最后）
-            print("\n" + "="*50)
+            print(f"\n" + "="*50)
             print(" 🎉 Wild 订阅提取与各分流源统计报告：")
             print("="*50)
-            print(f" 📈 扫描原始节点数: {len(wild_results_cache)} 个")
+            print(f" 📈 扫描原始节点数: {len(wild_lines)} 个")
             print("-"*50)
-            print(" 📶 13 个订阅器节点贡献分布统计 (原始拉取 -> 临时去重保留):")
+            print(" 📶 13 个订阅器节点贡献分布统计 (原始拉取 -> 实际去重保留):")
             all_sources = ["S5公益", "Moist_R", "CM", "Mia", "天诚1", "洛璃", "辣子鸡", "辣椒炒肉少放辣", "文烨", "Kristi", "周润发", "IDK", "DanFeng"]
             for src in all_sources:
                 raw_c = wild_raw_counter.get(src, 0)
@@ -477,7 +506,6 @@ def main():
         else:
             print("❌ 警告：未拉取到 Wild 聚合源数据，或拉取到的内容为空。")
         
-        # 机器平缓抗压停顿 1.0 秒，抗高频并发阻断
         print("🕒 缓冲停顿中，保障 API 节点存活稳定性...")
         time.sleep(1.0)
     else:
@@ -502,18 +530,18 @@ def main():
                 pass
     session.close()
 
-    # 【第三阶段】归并大去重，启动泛域名“最热前缀竞争”算法
-    print("\n🧐 [第三阶段] 正在将缓存数据深度合并，启动极速自适应去重与泛域名王者竞争重写...")
+    # 【第三阶段】归并大去重与泛域名精洗过滤
+    print("\n🧐 [第三阶段] 正在将缓存数据深度合并，启动极速高精格式洗净去重...")
     
     total_raw_crawled_count = len(raw_results) + len(wild_results_cache)
     all_raw_combined = raw_results + wild_results_cache
 
-    # 1. 第一轮提取并清洗所有合法的 candidate 元组，并保留原始数据
     unique_entries = set()
     all_extracted_candidates = []
     invalid_count = 0
     duplicate_count = 0
 
+    # 第一步：高精提取和 IP 规范化
     for line in all_raw_combined:
         line = clean_comment_and_spaces(line)
         if not line:
@@ -528,114 +556,106 @@ def main():
             invalid_count += 1
             continue
 
-        all_extracted_candidates.append((host, port))
-
-    # 2. 对泛域名模版匹配进行统计。找出所有的前缀，并在各后缀分组中统计出频次最高的“王者前缀”
-    wildcard_suffixes = [wd.replace('*', '') for wd in WILDCARD_DOMAINS]
-    prefix_frequency_tracker = {suffix: Counter() for suffix in wildcard_suffixes}
-
-    for host, port in all_extracted_candidates:
-        host_lower = host.lower()
-        for suffix in wildcard_suffixes:
-            # 匹配后缀，如: xxxx.cf.090227.xyz 匹配 .cf.090227.xyz
-            if host_lower.endswith(suffix):
-                prefix = host_lower[:-len(suffix)]
-                # 排除 cf 默认值、空、非合法前缀字符，高精度统计频数
-                if prefix and prefix != 'cf' and is_valid_domain(prefix):
-                    prefix_frequency_tracker[suffix][prefix] += 1
-            elif host_lower == suffix[1:]: # 例如裸域名 cf.090227.xyz
-                prefix_frequency_tracker[suffix]['cf'] += 1
-
-    # 计算出各个后缀出现频次最高（Winner）的最热前缀，若无或有并列，则退化使用默认的 cf
-    suffix_to_winner_prefix = {}
-    print("👑 [王者竞争中] 开始对提取的域名匹配组计算泛域名的最热前缀：")
-    for suffix in wildcard_suffixes:
-        counts = prefix_frequency_tracker[suffix]
-        if not counts:
-            suffix_to_winner_prefix[suffix] = "cf"
-            print(f"    - 后缀 {suffix.ljust(25)} : 无可用提取前缀，统一设为默认前缀 [cf]")
-        else:
-            max_frequency = max(counts.values())
-            # 统计最高频次的前缀得主
-            winners = [k for k, v in counts.items() if v == max_frequency]
-            if len(winners) == 1:
-                suffix_to_winner_prefix[suffix] = winners[0]
-                print(f"    - 后缀 {suffix.ljust(25)} : 王者前缀为 [{winners[0]}] (统计频次高达: {max_frequency} 次)")
-            else:
-                suffix_to_winner_prefix[suffix] = "cf"
-                print(f"    - 后缀 {suffix.ljust(25)} : 存在并列高频前缀 (包含{winners})，统一退守设为 [cf]")
-
-    # 3. 第二轮处理：将所有 matching 域名强制重写为最热前缀域名，并进行精洗与去重
-    ip_records = []
-    crawled_domains = []
-
-    for host, port in all_extracted_candidates:
-        host_lower = host.lower()
-        
-        # 匹配泛域名并强制重写
-        for suffix in wildcard_suffixes:
-            if host_lower.endswith(suffix) or host_lower == suffix[1:]:
-                best_prefix = suffix_to_winner_prefix.get(suffix, "cf")
-                host = f"{best_prefix}{suffix}"
-                break
-
-        standard_format = f"{host} {port}"
-        if standard_format in unique_entries:
-            duplicate_count += 1
-            continue
-
-        unique_entries.add(standard_format)
-
+        # 针对合法 IP 严格执行规范压缩并过滤无效格式
         if is_ip(host):
-            ip_records.append((host, port))
+            try:
+                # 压缩 IPv6 并清除大小写混杂及非标准表示形式
+                host = ipaddress.ip_address(host).compressed
+            except ValueError:
+                invalid_count += 1
+                continue
         else:
             if not is_valid_domain(host):
                 invalid_count += 1
                 continue
-            crawled_domains.append((host, port))
+            host = host_lower
 
-    # ==================== 7. 标准输出非标优选排序组合 ====================
+        all_extracted_candidates.append((host, port))
+
+    # 第二步：对泛域名使用信息熵进行严格而又高保留的极客过滤算法
+    wildcard_suffixes = [wd.replace('*', '') for wd in WILDCARD_DOMAINS]
+    
+    ip_records = []
+    crawled_domains = []
+    wildcard_matches = {suffix: [] for suffix in wildcard_suffixes}
+
+    for host, port in all_extracted_candidates:
+        if is_ip(host):
+            ip_records.append((host, port))
+        else:
+            # 匹配泛域名
+            matched_any_wildcard = False
+            for suffix in wildcard_suffixes:
+                if host.endswith(suffix):
+                    wildcard_matches[suffix].append((host, port))
+                    matched_any_wildcard = True
+                    break
+            
+            if not matched_any_wildcard:
+                crawled_domains.append((host, port))
+
+    # 信息熵筛选：防止同一泛域名域名泛滥。只保留最能体现随机自动扫描特性的极客节点
+    filtered_wildcard_domains = []
+    for suffix, domain_list in wildcard_matches.items():
+        if not domain_list:
+            continue
+        if len(domain_list) <= 10:  # 数量较少时直接全部保留
+            filtered_wildcard_domains.extend(domain_list)
+        else:
+            # 按照信息熵值从大到小排序，高熵值（高度乱序自动扫描出来的优选域名）优先保留前 15 个，完美满足多样性与防爆
+            entropy_list = []
+            for d, p in domain_list:
+                prefix = d[:-len(suffix)]
+                entropy_list.append((calculate_entropy(prefix), (d, p)))
+            entropy_list.sort(key=lambda x: x[0], reverse=True)
+            filtered_wildcard_domains.extend([item[1] for item in entropy_list[:15]])
+
+    # 第三步：精细去重并完美排列
     final_output_lines = []
 
-    # 1. 开头置顶：指定静态特定域名
+    # 1. 强制置顶静态优选域名
     for static_d in STATIC_DOMAINS:
         final_output_lines.append(f"{static_d} 443")
 
-    # 2. 开头置顶：固定泛域名统一转为选出的最热前缀形式
+    # 2. 泛域名置顶生成
     for wd in WILDCARD_DOMAINS:
-        suffix = wd.replace('*', '')
-        best_prefix = suffix_to_winner_prefix.get(suffix, "cf")
-        formatted_wd = f"{best_prefix}{suffix}"
+        random_prefix = generate_random_prefix(10)
+        formatted_wd = wd.replace('*', random_prefix)
         final_output_lines.append(f"{formatted_wd} 443")
 
-    # 3. 追加去重排序后的纯 IP
+    # 3. 筛选后的高熵值泛域名优选实例
+    for d, p in filtered_wildcard_domains:
+        final_output_lines.append(f"{d} {p}")
+
+    # 4. 经过标准压缩整理的纯 IP 序列（进行精确去重并升序排列）
     for ip, p in sorted(ip_records):
         final_output_lines.append(f"{ip} {p}")
 
-    # 4. 结尾：追加其余未重复的普通订阅域名
-    written_nodes = set()
-    cleaned_output = []
-
-    for node_line in final_output_lines:
-        cleaned_output.append(node_line)
-        written_nodes.add(node_line)
-
+    # 5. 普通优质爬虫域名
     for d, p in sorted(crawled_domains):
-        standard_node = f"{d} {p}"
-        if standard_node not in written_nodes:
-            cleaned_output.append(standard_node)
-            written_nodes.add(standard_node)
+        final_output_lines.append(f"{d} {p}")
 
-    # ==================== 8. 落盘并向 log.txt 智能追加总结日志 ====================
+    # 第四步：彻底全局去重（保持节点在 final_output_lines 中的出场顺序不变）
+    seen_final = set()
+    cleaned_output = []
+    for line in final_output_lines:
+        h, p = extract_pure_ip_and_port(line)
+        standard_node = f"{h} {p}"
+        if standard_node in seen_final:
+            duplicate_count += 1
+            continue
+        seen_final.add(standard_node)
+        cleaned_output.append(standard_node)
+
+    # ==================== 7. 落盘并写入总结日志 ====================
     try:
-        # 写入 juhe.txt
         with open(file_all, "w", encoding="utf-8") as f:
             for line in cleaned_output:
                 f.write(line + "\n")
 
         elapsed = time.time() - start_time
 
-        # 智能自增算第几次聚合
+        # 智能自增聚合数
         next_run_num = 1
         if os.path.exists(file_log):
             try:
@@ -649,28 +669,43 @@ def main():
 
         log_header = f"聚合{next_run_num}日志"
 
-        # 优雅极致缩略的总结面板
+        # 分析节点类型分布
+        ipv4_count = 0
+        ipv6_count = 0
+        domain_count = 0
+        for node_line in cleaned_output:
+            h = node_line.split(' ')[0]
+            if is_ip(h):
+                if ':' in h:
+                    ipv6_count += 1
+                else:
+                    ipv4_count += 1
+            else:
+                domain_count += 1
+
         dashboard = []
         dashboard.append("===========================================")
         dashboard.append(f"[北京时间] {time_str}")
         dashboard.append(f"{log_header}")
         dashboard.append("-------------------------------------------")
-        dashboard.append(f" ✨ 极速聚合去重处理完毕！(整体耗时: {elapsed:.2f} 秒)")
+        dashboard.append(f" ✨ 极速聚合去重完美收官！(整体耗时: {elapsed:.2f} 秒)")
         dashboard.append(f" 💾 输出文件: juhe.txt")
-        dashboard.append(f" 💾 追加写入日志文件: log.txt")
+        dashboard.append(f" 💾 日志追加: log.txt")
         dashboard.append("-------------------------------------------")
-        dashboard.append(f" 📈 原始读取总行数/节点数: {total_raw_crawled_count} 个")
-        dashboard.append(f" 🚫 过滤无效占位/异常节点数: {invalid_count} 个")
-        dashboard.append(f" 🔄 除去重复/冗余重叠节点数: {duplicate_count} 个")
-        dashboard.append(f" 💾 最终去重保留节点总量: {len(cleaned_output)} 个")
+        dashboard.append(f" 📈 原始拉取节点总数: {total_raw_crawled_count} 个")
+        dashboard.append(f" 🚫 过滤无效/脏数据节点: {invalid_count} 个")
+        dashboard.append(f" 🔄 除去重复冗余节点: {duplicate_count} 个")
+        dashboard.append(f" 💾 最终清洗导出节点量: {len(cleaned_output)} 个")
+        dashboard.append("-------------------------------------------")
+        dashboard.append(" 📊 导出节点结构解析:")
+        dashboard.append(f"    - IPv4 优选节点: {ipv4_count} 个")
+        dashboard.append(f"    - IPv6 优选节点: {ipv6_count} 个 (标准非标格式：去中括号 + 标准压缩)")
+        dashboard.append(f"    - 域名 优选节点: {domain_count} 个")
         dashboard.append("===========================================\n\n")
 
         full_dashboard_text = "\n".join(dashboard)
-        
-        # 终端实时渲染
         print(full_dashboard_text)
 
-        # 追加落盘
         with open(file_log, "a", encoding="utf-8") as f_log:
             f_log.write(full_dashboard_text)
 
