@@ -138,8 +138,11 @@ exact_block_hosts = {"127.0.0.1", "localhost", "0.0.0.0", "::1", "::"}
 if WILD_SUB_HOST:
     exact_block_hosts.add(WILD_SUB_HOST)
 
+# 增强了垃圾/虚假/广告占位符关键字拦截库
 substring_block_keywords = [
-    "too many requests", "error", "bestcf.pages.dev", "exception"
+    "too many requests", "error", "bestcf.pages.dev", "exception",
+    "updated.at", "telegram", "join.my", "channel", "cmliussss.to",
+    "github", "unlock.more"
 ]
 
 # ==================== 4. 编译正则表达式 ====================
@@ -220,6 +223,9 @@ def is_valid_domain(hostname):
     if hostname.replace(".", "").isdigit():
         return False
     if ".." in hostname or hostname.startswith(".") or hostname.endswith("."):
+        return False
+    # 彻底拦截一些子域名层级过多（如超过5层）的广告域名推广
+    if hostname.count('.') > 5:
         return False
     return bool(re.match(r'^[a-zA-Z0-9][-a-zA-Z0-9.]*[a-zA-Z0-9]$', hostname))
 
@@ -480,7 +486,13 @@ def main():
                                 host = host.lower()
                                 
                             standard_format = f"{host} {port}"
-                            if host not in exact_block_hosts and not any(kw in host for kw in substring_block_keywords):
+                            
+                            # 判定拦截广告及占位符
+                            is_blocked = False
+                            if host in exact_block_hosts or any(kw in host for kw in substring_block_keywords):
+                                is_blocked = True
+                            
+                            if not is_blocked:
                                 wild_results_cache.append(cleaned_line)
                                 if standard_format not in temp_seen:
                                     temp_seen.add(standard_format)
@@ -602,7 +614,7 @@ def main():
         if len(domain_list) <= 10:  # 数量较少时直接全部保留
             filtered_wildcard_domains.extend(domain_list)
         else:
-            # 按照信息熵值从大到小排序，高熵值（高度乱序自动扫描出来的优选域名）优先保留前 15 个，完美满足多样性与防爆
+            # 按照信息熵值从大到小排序，高熵值优先保留前 15 个，完美满足多样性与防爆
             entropy_list = []
             for d, p in domain_list:
                 prefix = d[:-len(suffix)]
