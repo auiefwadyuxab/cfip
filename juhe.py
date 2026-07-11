@@ -667,14 +667,14 @@ def main():
             for line in cleaned_output:
                 f.write(line + "\n")
 
-        # 2. 写入新增要求的 test.txt (格式为: host:port, IPv6 节点带方括号)
+        # 2. 写入新增要求的 test.txt (格式严格定义为: host:port#HK, IPv6 节点带方括号)
         with open(file_test, "w", encoding="utf-8") as f_test:
             for line in cleaned_output:
                 h, p = extract_pure_ip_and_port(line)
                 if ":" in h:  # IPv6
-                    f_test.write(f"[{h}]:{p}\n")
+                    f_test.write(f"[{h}]:{p}#HK\n")
                 else:
-                    f_test.write(f"{h}:{p}\n")
+                    f_test.write(f"{h}:{p}#HK\n")
 
         elapsed = time.time() - start_time
 
@@ -713,7 +713,7 @@ def main():
         dashboard.append("-------------------------------------------")
         dashboard.append(f" ✨ 极速聚合去重完美收官！(整体耗时: {elapsed:.2f} 秒)")
         dashboard.append(f" 💾 输出文件 1 (空格分隔): juhe.txt")
-        dashboard.append(f" 💾 输出文件 2 (冒号分隔): test.txt")
+        dashboard.append(f" 💾 输出文件 2 (冒号加备注): test.txt")
         dashboard.append(f" 💾 日志追加: log.txt")
         dashboard.append("-------------------------------------------")
         dashboard.append(f" 📈 原始拉取节点总数: {total_raw_crawled_count} 个")
