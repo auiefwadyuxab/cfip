@@ -40,7 +40,7 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
           # 跟踪最终生成的去重文件和追加的日志
-          git add juhe.txt log.txt
+          git add juhe.txt test.txt log.txt
           
           if git diff --cached --quiet; then
             echo "没有发现节点数据和日志发生变更，跳过本次推送。"
