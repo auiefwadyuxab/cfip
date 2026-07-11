@@ -25,6 +25,7 @@ print_lock = threading.Lock()
 # ==================== 1. 路径定义 (自适应GitHub根目录输出) ====================
 script_dir = os.path.dirname(os.path.abspath(__file__)) if __file__ else "."
 file_all = os.path.join(script_dir, "juhe.txt")
+file_test = os.path.join(script_dir, "test.txt")
 file_log = os.path.join(script_dir, "log.txt")
 
 # ==================== 2. 静态订阅源定义 ====================
@@ -661,9 +662,19 @@ def main():
 
     # ==================== 7. 落盘并写入总结日志 ====================
     try:
+        # 1. 写入原本的 juhe.txt
         with open(file_all, "w", encoding="utf-8") as f:
             for line in cleaned_output:
                 f.write(line + "\n")
+
+        # 2. 写入新增要求的 test.txt (格式为: host:port, IPv6 节点带方括号)
+        with open(file_test, "w", encoding="utf-8") as f_test:
+            for line in cleaned_output:
+                h, p = extract_pure_ip_and_port(line)
+                if ":" in h:  # IPv6
+                    f_test.write(f"[{h}]:{p}\n")
+                else:
+                    f_test.write(f"{h}:{p}\n")
 
         elapsed = time.time() - start_time
 
@@ -701,7 +712,8 @@ def main():
         dashboard.append(f"{log_header}")
         dashboard.append("-------------------------------------------")
         dashboard.append(f" ✨ 极速聚合去重完美收官！(整体耗时: {elapsed:.2f} 秒)")
-        dashboard.append(f" 💾 输出文件: juhe.txt")
+        dashboard.append(f" 💾 输出文件 1 (空格分隔): juhe.txt")
+        dashboard.append(f" 💾 输出文件 2 (冒号分隔): test.txt")
         dashboard.append(f" 💾 日志追加: log.txt")
         dashboard.append("-------------------------------------------")
         dashboard.append(f" 📈 原始拉取节点总数: {total_raw_crawled_count} 个")
