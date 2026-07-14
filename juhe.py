@@ -15,6 +15,8 @@ import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, unquote
 from collections import Counter, defaultdict
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 # 忽略安全套接字SSL警告，保持控制台整洁
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -210,12 +212,12 @@ def extract_pure_ip_and_port(ip_port):
     return ip_port, "443"
 
 def is_ip(address):
-    """验证是否属于标准 IP 结构 (IPv4 或 IPv6)"""
-    if ipv4_regex.match(address):
+    """通过系统标准库极其精准地校验是否属于 IPv4 或 IPv6 地址，100% 避免误判"""
+    try:
+        ipaddress.ip_address(address)
         return True
-    if ':' in address:
-        return True
-    return False
+    except ValueError:
+        return False
 
 def is_valid_domain(hostname):
     """审查域名格式的合法性"""
@@ -416,8 +418,17 @@ def main():
     time_str = bj_now.strftime('%Y-%m-%d %H:%M:%S')
 
     raw_results = []
+    
+    # ------------------- 核心网络层高可用重试挂载 -------------------
     session = requests.Session()
-
+    # 定义重试规则：重试 3 次，对 500、502、503、504 服务状态码自动执行退避延迟重试
+    retries = Retry(
+        total=3,
+        backoff_factor=0.5,  # 重试延迟间隔系数，依次延迟 0.5s、1.0s、2.0s
+        status_forcelist=[500, 502, 503, 504],
+        raise_on_status=False
+    )
+    
     # 13个源提供商分布追踪字典 (完美精准检测)
     source_mapping = {
         "CM": ["sub.cmliussss.net", "[cm]", "cmliussss"],
@@ -444,6 +455,10 @@ def main():
 
     wild_results_cache = []
     if WILD_SUB_URL:
+        # 为第一阶段会话也部署高防抖动挂载
+        session.mount('http://', HTTPAdapter(max_retries=retries))
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        
         print(f"📡 [第一阶段] 正在模拟 v2rayNG 客户端连接并请求 Wild 订阅节点...")
         raw_wild_text = fetch_single_url_raw(session, WILD_SUB_URL, WILD_SUB_HOST, is_wild_source=True)
         
@@ -451,7 +466,7 @@ def main():
             print("✅ 订阅源数据已成功拉取，进入高精确原始比对清洗阶段...")
             decoded_wild_content = robust_decode_base64(raw_wild_text)
             
-            # 直接在 Base64 解码后且未破坏节点原本特征(协议、备注、参数)的原始行上进行精准分类统计
+            # 直接在 Base64 解码后且未破坏节点原本特征的原始行上进行精准分类统计
             wild_lines = decoded_wild_content.splitlines()
             temp_seen = set()
             
@@ -528,7 +543,12 @@ def main():
     max_fetch_workers = len(ALL_SOURCES)
     print(f"🚀 [第二阶段] 解除并发阀门，开启常规订阅极速多线程并轨拉取 (线程数: {max_fetch_workers})...")
     
-    adapter = requests.adapters.HTTPAdapter(pool_connections=max_fetch_workers, pool_maxsize=max_fetch_workers * 2)
+    # 将高防抖自动重试策略同步应用于多线程抓取池中
+    adapter = HTTPAdapter(
+        pool_connections=max_fetch_workers, 
+        pool_maxsize=max_fetch_workers * 2,
+        max_retries=retries
+    )
     session.mount('http://', adapter)
     session.mount('https://', adapter)
 
