@@ -1,0 +1,80 @@
+name: vps789
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每 3 小时执行一次（GitHub Actions 使用 UTC）
+    - cron: "0 */3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vps789-update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 配置 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: 安装依赖
+        working-directory: vps789
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade playwright httpx
+          python -m playwright install --with-deps chromium
+
+      - name: 抓取并生成六个端口文件
+        working-directory: vps789
+        run: |
+          python vps789.py --count 200 --min-count 100
+
+      - name: 检查生成结果
+        working-directory: vps789
+        run: |
+          set -euo pipefail
+
+          for file in 443.txt 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt; do
+            test -s "$file"
+            count=$(grep -cve '^[[:space:]]*$' "$file")
+            echo "$file -> $count lines"
+            test "$count" -ge 100
+          done
+
+      - name: 提交并推送
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add vps789/443.txt \
+                  vps789/8443.txt \
+                  vps789/2053.txt \
+                  vps789/2083.txt \
+                  vps789/2087.txt \
+                  vps789/2096.txt
+
+          if git diff --cached --quiet; then
+            echo "六个输出文件没有变化，跳过提交。"
+            exit 0
+          fi
+
+          now="$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
+          git commit -m "vps789: update ${now}"
+
+          # 防止调度期间仓库出现新提交。
+          git pull --rebase origin main
+          git push origin HEAD:main
