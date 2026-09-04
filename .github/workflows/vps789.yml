@@ -67,6 +67,8 @@ jobs:
           done
 
       - name: 提交并推送
+        env:
+          TARGET_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
 
@@ -88,6 +90,7 @@ jobs:
           now="$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
           git commit -m "vps789: update ${now}"
 
-          git fetch origin main
-          git rebase origin/main
-          git push origin HEAD:main
+          # 在提交后同步默认分支，避免调度期间出现并发提交导致 push 拒绝。
+          git fetch origin "${TARGET_BRANCH}"
+          git rebase "origin/${TARGET_BRANCH}"
+          git push origin "HEAD:${TARGET_BRANCH}"
