@@ -3,7 +3,7 @@ name: vps789
 on:
   workflow_dispatch:
   schedule:
-    # 每 3 小时执行一次（GitHub Actions 使用 UTC）
+    # 每 3 小时运行一次（GitHub Actions 使用 UTC）
     - cron: "0 */3 * * *"
 
 permissions:
@@ -27,30 +27,43 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-          cache: "pip"
+          cache: pip
+          cache-dependency-path: vps789/requirements.txt
 
-      - name: 安装依赖
+      - name: 安装 Python 依赖
         working-directory: vps789
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --upgrade playwright httpx
-          python -m playwright install --with-deps chromium
+          python -m pip install -r requirements.txt
+
+      - name: 安装 Chromium
+        run: python -m playwright install --with-deps chromium
 
       - name: 抓取并生成六个端口文件
         working-directory: vps789
         run: |
+          set -euo pipefail
           python vps789.py --count 200 --min-count 100
 
-      - name: 检查生成结果
+      - name: 严格检查生成结果
         working-directory: vps789
         run: |
           set -euo pipefail
 
-          for file in 443.txt 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt; do
+          files=(443.txt 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt)
+
+          for file in "${files[@]}"; do
             test -s "$file"
             count=$(grep -cve '^[[:space:]]*$' "$file")
             echo "$file -> $count lines"
             test "$count" -ge 100
+          done
+
+          # 六个端口文件应该使用同一批域名，只改变端口号。
+          cut -d: -f1 443.txt > /tmp/vps789_hosts_443.txt
+          for file in 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt; do
+            cut -d: -f1 "$file" > "/tmp/vps789_hosts_${file%.txt}.txt"
+            cmp -s /tmp/vps789_hosts_443.txt "/tmp/vps789_hosts_${file%.txt}.txt"
           done
 
       - name: 提交并推送
@@ -75,6 +88,6 @@ jobs:
           now="$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
           git commit -m "vps789: update ${now}"
 
-          # 防止调度期间仓库出现新提交。
-          git pull --rebase origin main
+          git fetch origin main
+          git rebase origin/main
           git push origin HEAD:main
