@@ -1,3 +1,3 @@
-# Stable releases verified on 2026-09-04.
+# Runtime dependencies for vps789.py
 playwright==1.62.0
 httpx==0.28.1
