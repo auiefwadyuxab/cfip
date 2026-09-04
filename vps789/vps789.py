@@ -438,7 +438,7 @@ def collect_page_domains(
                     if (!rows.length) return false;
                     return rows[0].innerText !== oldText;
                 }""",
-                first_row_text,
+                arg=first_row_text,
                 timeout=TABLE_TIMEOUT_MS,
             )
         except PlaywrightTimeoutError:
