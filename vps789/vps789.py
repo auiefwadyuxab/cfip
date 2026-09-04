@@ -66,8 +66,9 @@ SPEED_KEYS = ("下载", "下载速度", "速度", "download", "speed")
 TELECOM_KEYS = ("电信", "telecom", "ctcc")
 
 SPEED_UNIT_RE = re.compile(
-    r"(?i)\b(?:KB|MB|GB|TB)\s*/?\s*s\b|"
-    r"(?i)\b(?:Kbps|Mbps|Gbps|Tbps)\b"
+    r"(?:KB|MB|GB|TB)\s*/?\s*s\b|"
+    r"(?:Kbps|Mbps|Gbps|Tbps)\b",
+    re.IGNORECASE,
 )
 NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 LATENCY_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*ms\b", re.I)
