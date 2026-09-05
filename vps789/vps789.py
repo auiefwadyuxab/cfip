@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""VPS789 优选域名聚合器。
+"""VPS789 优选域名聚合器（r5）。
 
 目标：
 1. 从 VPS789 域名页抓取全部分页，严格保持网页顺序，网页源本身不去重、不截断。
@@ -32,7 +32,8 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Locator, Page
 from playwright.sync_api import sync_playwright
 
 
@@ -121,6 +122,25 @@ def is_plausible_host(value: str) -> bool:
     return bool(host and " " not in host and HOST_RE.fullmatch(host))
 
 
+def parse_metric_number(value: object) -> str:
+    """把 API 的纯数字或带单位字符串统一为非负数字文本。"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return ""
+    text = clean_text(str(value))
+    match = NUMBER_RE.search(text)
+    if not match:
+        return ""
+    try:
+        number = float(match.group(0))
+    except ValueError:
+        return ""
+    if number < 0:
+        return ""
+    return format_number(number)
+
+
 def format_number(value: object) -> str:
     if value is None or value == "":
         return ""
@@ -166,27 +186,41 @@ def find_data_rows(page: Page) -> Locator:
     return page.locator("table tbody tr")
 
 
-def wait_for_first_data_row(page: Page) -> Locator:
-    """等待异步表格真正出现数据。"""
-    rows = page.locator(",".join(DATA_ROW_SELECTORS))
-    first_row = rows.first
-    first_row.wait_for(state="attached", timeout=TABLE_TIMEOUT_MS)
-
-    # 使用无参数的 Page.wait_for_function，避免把外部字符串拼进 JS，
-    # 从根源上规避前一版的 SyntaxError，同时兼容 Playwright 1.57+。
-    page.wait_for_function(
-        "() => { const row = document.querySelector("
-        "'.el-table__body-wrapper tbody tr.el-table__row, "
-        ".el-table__body tbody tr.el-table__row, "
-        "table tbody tr.el-table__row, "
-        ".el-table__body-wrapper tbody tr, "
-        ".el-table__body tbody tr, "
-        "table tbody tr'"
-        "); return !!row && row.innerText.trim().length > 0; }",
-        polling=100,
-        timeout=TABLE_TIMEOUT_MS,
+def _row_signature(rows: Locator, limit: int = 2) -> tuple[str, ...]:
+    """读取前若干行的稳定文本签名；完全避免执行动态 JavaScript predicate。"""
+    count = rows.count()
+    return tuple(
+        clean_text(rows.nth(i).inner_text())
+        for i in range(min(count, limit))
     )
-    return first_row
+
+
+def _wait_until(deadline: float, predicate, interval: float = 0.10) -> bool:
+    """轻量 Python 轮询，只吞掉浏览器瞬时状态错误。"""
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return True
+        except PlaywrightError:
+            # Vue/ElementPlus 重绘期间元素可能短暂脱离 DOM；下一轮继续观察。
+            pass
+        time.sleep(interval)
+    return False
+
+
+def wait_for_first_data_row(page: Page) -> Locator:
+    """等待异步表格出现至少一条有实际文本的数据行。"""
+    rows = page.locator(",".join(DATA_ROW_SELECTORS))
+    deadline = time.monotonic() + TABLE_TIMEOUT_MS / 1000
+
+    def ready() -> bool:
+        if rows.count() == 0:
+            return False
+        return any(_row_signature(rows, limit=2))
+
+    if not _wait_until(deadline, ready):
+        raise RuntimeError("等待 VPS789 数据表超时：页面没有出现有效数据行。")
+    return rows
 
 
 def extract_domain_from_cells(cells: list[str]) -> tuple[int, str] | None:
@@ -289,38 +323,27 @@ def get_pagination_active_locator(page: Page) -> Locator:
 def wait_for_page_change(
     page: Page,
     rows: Locator,
-    old_first_text: str,
+    old_signature: str,
     old_page_number: str,
 ) -> None:
-    """优先等待页码变化，退回到首行变化。
+    """确认点击下一页后页码与/或表格内容发生实际变化。"""
+    deadline = time.monotonic() + PAGINATION_TIMEOUT_MS / 1000
 
-    外部文本先通过 DOM dataset 写入，再使用无参数 JS predicate，
-    从而不把 Python 字符串直接嵌入 JavaScript 源代码。
-    """
-    active_page = get_pagination_active_locator(page)
-    if active_page.count() > 0 and old_page_number:
-        try:
-            page.wait_for_function(
-                "() => { const el = document.querySelector("
-                "'.el-pagination .el-pager li.number.active, .el-pagination .el-pager li.number.is-active'"
-                "); return !!el && el.innerText.trim() !== document.documentElement.dataset.vps789OldPage; }",
-                polling=100,
-                timeout=PAGINATION_TIMEOUT_MS,
-            )
-            return
-        except PlaywrightTimeoutError:
-            pass
+    def changed() -> bool:
+        active_page = get_pagination_active_locator(page)
+        current_page = clean_text(active_page.inner_text()) if active_page.count() else ""
 
-    try:
-        page.wait_for_function(
-            "() => { const rows = document.querySelectorAll("
-            "'.el-table__body-wrapper tbody tr.el-table__row, .el-table__body tbody tr.el-table__row, table tbody tr.el-table__row, table tbody tr'"
-            "); if (!rows.length) return false; const signature = Array.from(rows).slice(0, 2).map(row => row.innerText.trim()).join('\u001f'); return signature.length > 0 && signature !== document.documentElement.dataset.vps789OldFirst; }",
-            polling=100,
-            timeout=PAGINATION_TIMEOUT_MS,
-        )
-    except PlaywrightTimeoutError as exc:
-        raise RuntimeError("点击下一页后表格内容没有确认发生变化。") from exc
+        # 页码发生变化后，再确认数据行已经脱离旧快照，避免只看到分页按钮
+        # 先变而表格尚未完成异步重绘。没有页码可观察时，以首两行为依据。
+        current_signature = "\x1f".join(_row_signature(rows, limit=2))
+        if current_page and old_page_number:
+            if current_page != old_page_number:
+                return current_signature != old_signature and bool(current_signature)
+            return False
+        return current_signature != old_signature and bool(current_signature)
+
+    if not _wait_until(deadline, changed):
+        raise RuntimeError("点击下一页后表格内容没有确认发生变化。")
 
 
 def collect_page_domains(page: Page) -> list[DomainRecord]:
@@ -382,25 +405,12 @@ def collect_page_domains(page: Page) -> list[DomainRecord]:
         if next_button.is_disabled():
             break
 
-        first_row = rows.first
-        old_first_text = "\u001f".join(
-            clean_text(rows.nth(i).inner_text()) for i in range(min(2, row_count))
-        )
+        old_signature = "\u001f".join(_row_signature(rows, limit=2))
         active_page = get_pagination_active_locator(page)
         old_page_number = clean_text(active_page.inner_text()) if active_page.count() else ""
 
-        # 保存比较基准；翻页后的等待完全基于当前 DOM 状态。
-        page.evaluate(
-            "value => document.documentElement.dataset.vps789OldPage = value",
-            old_page_number,
-        )
-        page.evaluate(
-            "value => document.documentElement.dataset.vps789OldFirst = value",
-            old_first_text,
-        )
-
         next_button.click()
-        wait_for_page_change(page, rows, old_first_text, old_page_number)
+        wait_for_page_change(page, rows, old_signature, old_page_number)
 
     return all_records
 
@@ -434,6 +444,16 @@ def new_page(browser):
         viewport={"width": 1440, "height": 1000},
         locale="zh-CN",
     )
+
+    def route_handler(route):
+        if route.request.resource_type in {"image", "media", "font"}:
+            route.abort()
+            return
+        route.continue_()
+
+    # 页面只需要表格数据；阻断图片/媒体/字体可以减少无关请求，且不碰 XHR/fetch。
+    context.route("**/*", route_handler)
+
     page = context.new_page()
     page.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
     page.set_default_timeout(TABLE_TIMEOUT_MS)
@@ -524,8 +544,8 @@ def fetch_top20_api() -> list[DomainRecord]:
                 if not is_plausible_host(host):
                     continue
 
-                latency = format_number(item.get("dxLatency"))
-                loss = format_number(item.get("dxPkgLostRate"))
+                latency = parse_metric_number(item.get("dxLatency"))
+                loss = parse_metric_number(item.get("dxPkgLostRate"))
                 if not latency or not loss:
                     continue
 
@@ -574,19 +594,6 @@ def merge_sources(
         f"API 新增 {api_added} 条 = {len(merged)} 条"
     )
     return merged
-
-
-def atomic_write(path: Path, content: str) -> None:
-    tmp = path.with_name(f".{path.name}.{Path.cwd().name}.tmp")
-    try:
-        tmp.write_text(content, encoding="utf-8", newline="\n")
-        tmp.replace(path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
 
 
 def write_outputs(records: list[DomainRecord], output_dir: Path) -> None:
