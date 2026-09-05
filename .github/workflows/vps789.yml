@@ -16,7 +16,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: 检出仓库
@@ -32,10 +32,10 @@ jobs:
           cache-dependency-path: vps789/requirements.txt
 
       - name: 缓存 Playwright 浏览器
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-1.62.0
+          key: ${{ runner.os }}-playwright-${{ hashFiles('vps789/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-playwright-
 
