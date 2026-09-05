@@ -48,16 +48,12 @@ jobs:
           set -euo pipefail
           python -m pip install --requirement requirements.txt --disable-pip-version-check
 
-      - name: 安装 Chromium（缓存未命中）
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+      - name: 准备并校验 Chromium
         run: |
           set -euo pipefail
-          python -m playwright install --with-deps --only-shell chromium
 
-      - name: 校验 Chromium 环境
-        run: |
-          set -euo pipefail
-          python - <<'PY'
+          smoke_test() {
+            python - <<'PY'
           from playwright.sync_api import sync_playwright
 
           with sync_playwright() as p:
@@ -67,6 +63,22 @@ jobs:
               print("Chromium headless launch: PASS")
               browser.close()
           PY
+          }
+
+          if [[ "${{ steps.playwright-cache.outputs.cache-hit }}" == "true" ]]; then
+            echo "Playwright 浏览器缓存命中，先做实际启动校验。"
+            if smoke_test; then
+              exit 0
+            fi
+
+            echo "Playwright 浏览器缓存校验失败，执行强制修复安装。" >&2
+            python -m playwright install --force --with-deps --only-shell chromium
+          else
+            echo "Playwright 浏览器缓存未命中，执行首次安装。"
+            python -m playwright install --with-deps --only-shell chromium
+          fi
+
+          smoke_test
 
       - name: 保存 Playwright 浏览器缓存
         if: ${{ steps.playwright-cache.outputs.cache-hit != 'true' }}
