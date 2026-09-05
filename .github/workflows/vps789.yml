@@ -17,6 +17,8 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: 检出仓库
@@ -31,29 +33,65 @@ jobs:
           cache: pip
           cache-dependency-path: vps789/requirements.txt
 
-      - name: 缓存 Playwright 浏览器
-        uses: actions/cache@v6.1.0
+      - name: 恢复 Playwright 浏览器缓存
+        id: playwright-cache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('vps789/requirements.txt') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ hashFiles('vps789/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-playwright-
+            ${{ runner.os }}-${{ runner.arch }}-playwright-
 
       - name: 安装 Python 依赖
         working-directory: vps789
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --upgrade pip --disable-pip-version-check
+          python -m pip install --requirement requirements.txt --disable-pip-version-check
 
-      - name: 安装 Chromium
-        run: python -m playwright install --with-deps chromium
+      - name: 安装 Chromium（缓存未命中）
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          python -m playwright install --with-deps chromium
+
+      - name: 校验 Chromium 环境
+        run: |
+          set -euo pipefail
+          test -d "$HOME/.cache/ms-playwright"
+          python - <<'PY'
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as p:
+              executable = Path(p.chromium.executable_path)
+              print(f"Chromium executable: {executable}")
+              if not executable.is_file():
+                  raise SystemExit("Chromium 浏览器安装不完整：可执行文件不存在。")
+          PY
+
+      - name: 保存 Playwright 浏览器缓存
+        if: ${{ always() && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
 
       - name: 抓取并生成六个端口文件
+        id: scrape
         working-directory: vps789
         run: |
           set -euo pipefail
           python vps789.py
+
+      - name: 上传失败诊断
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vps789-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: vps789/.diagnostics/
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: 严格检查生成结果
         working-directory: vps789
@@ -77,16 +115,19 @@ jobs:
             awk -v port="$port" '
               /^[[:space:]]*$/ { next }
               {
-                prefix = "^([^:#[:space:]]+):" port "#"
+                prefix = "^[^:#[:space:]]+:" port "#"
                 if ($0 !~ prefix) {
                   print "非法输出行（端口或结构错误）: " $0
                   exit 1
                 }
+
                 info = $0
                 sub(/^.*#/, "", info)
-                # 网页源必须包含 ms；API 补充项允许没有下载速度，但仍必须有延迟/丢包率。
-                if (info !~ /^[0-9]+(?:\.[0-9]+)?ms\/[0-9]+(?:\.[0-9]+)?-[0-9]+(?:\.[0-9]+)?(KB|MB|GB|TB)\/s$/ &&
-                    info !~ /^[0-9]+(?:\.[0-9]+)?ms\/[0-9]+(?:\.[0-9]+)?-$/) {
+
+                # 网页源：必须存在延迟ms、丢包率和下载速度。
+                # API 补充：允许下载速度为空，但仍必须有延迟ms和丢包率。
+                if (info !~ /^[0-9]+(\.[0-9]+)?ms\/[0-9]+(\.[0-9]+)?-[0-9]+(\.[0-9]+)?(KB|MB|GB|TB)\/s$/ &&
+                    info !~ /^[0-9]+(\.[0-9]+)?ms\/[0-9]+(\.[0-9]+)?-$/) {
                   print "非法 info: " $0
                   exit 1
                 }
@@ -104,10 +145,20 @@ jobs:
             cmp -s /tmp/vps789_hosts_443.txt "/tmp/vps789_hosts_${file%.txt}.txt"
           done
 
+      - name: 检查工作区是否只产生预期输出变化
+        run: |
+          set -euo pipefail
+          git status --short
+          unexpected=$(git status --short --untracked-files=all | grep -vE '^.. vps789/(443|8443|2053|2083|2087|2096)\.txt$' || true)
+          if [[ -n "$unexpected" ]]; then
+            echo "发现非预期文件变化："
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+
       - name: 提交并推送
         env:
           TARGET_BRANCH: ${{ github.event.repository.default_branch }}
-        working-directory: .
         run: |
           set -euo pipefail
 
@@ -126,11 +177,11 @@ jobs:
             exit 0
           fi
 
-          now="$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
           git diff --cached --check
+          now="$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
           git commit -m "vps789: update ${now}"
 
-          # 提交后工作树已干净，可以安全地同步远端并处理极短的并发窗口。
+          # 抓取阶段完成后工作树已干净；同步并处理短暂的远端提交竞争。
           for attempt in 1 2 3; do
             git fetch origin "${TARGET_BRANCH}"
             git rebase "origin/${TARGET_BRANCH}"
