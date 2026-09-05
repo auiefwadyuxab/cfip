@@ -21,22 +21,21 @@ VPS789 优选域名聚合器（全部分页 + 电信指标 + 下载速度）
     域名:端口#延迟/丢包率-下载速度
 
 例如：
-    example.com:443#78/0-1234KB/s
-    example.com:8443#91/1-
+    example.com:443#78ms/0-1234KB/s
+    example.com:8443#91ms/1-
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import httpx
-from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Locator, Page
 from playwright.sync_api import sync_playwright
 
 
@@ -47,7 +46,6 @@ PORTS = (443, 8443, 2053, 2083, 2087, 2096)
 
 NAVIGATION_TIMEOUT_MS = 60_000
 TABLE_TIMEOUT_MS = 30_000
-DOM_SETTLE_MS = 800
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -81,6 +79,7 @@ DOWNLOAD_SPEED_RE = re.compile(
 class DomainRecord:
     host: str
     info: str = ""
+    source: Literal["web", "api"] = "web"
 
     @property
     def key(self) -> str:
@@ -142,7 +141,8 @@ def format_info(latency: str = "", loss: str = "", speed: str = "") -> str:
     """
     if not any((latency, loss, speed)):
         return ""
-    return f"{latency}/{loss}-{speed}"
+    latency_part = f"{latency}ms" if latency else ""
+    return f"{latency_part}/{loss}-{speed}"
 
 
 def get_row_cells(row: Locator) -> list[str]:
@@ -184,29 +184,30 @@ def extract_domain_from_cells(cells: list[str]) -> tuple[int, str] | None:
     return None
 
 
-def extract_telecom_metric(cells: list[str]) -> tuple[str, str]:
+def extract_telecom_metric(cells: list[str]) -> tuple[str, str, int]:
     """
     页面三网指标依次为：电信、移动、联通。
     不依赖复杂的多行/合并表头，而是识别单元格本身的“延迟/丢包率”文本：
     同一行中第一个匹配项就是电信(24H)。
     """
-    for text in cells:
+    for index, text in enumerate(cells):
         match = TELECOM_METRIC_RE.search(text)
         if match:
             return (
                 format_number(match.group(1)),
                 format_number(match.group(2)),
+                index,
             )
-    return "", ""
+    return "", "", -1
 
 
-def extract_download_speed(cells: list[str]) -> str:
+def extract_download_speed(cells: list[str], start_index: int = 0) -> str:
     """
     只读取“下载速度”列。
     页面当前下载速度直接带 KB/s、MB/s、GB/s 等单位，因此识别速度单位
     比按固定列号更稳健，也不会误把移动/联通的数字当成下载速度。
     """
-    for text in cells:
+    for text in cells[start_index + 1 :]:
         match = DOWNLOAD_SPEED_RE.search(text)
         if match:
             return f"{format_number(match.group(1))}{match.group(2).upper()}/s"
@@ -224,12 +225,13 @@ def extract_record_from_row(
         return None
 
     _, host = domain_result
-    latency, loss = extract_telecom_metric(cells)
-    speed = extract_download_speed(cells)
+    latency, loss, telecom_index = extract_telecom_metric(cells)
+    speed = extract_download_speed(cells, telecom_index) if telecom_index >= 0 else ""
 
     return DomainRecord(
         host=host,
         info=format_info(latency=latency, loss=loss, speed=speed),
+        source="web",
     )
 
 
@@ -248,12 +250,6 @@ def find_data_rows(page: Page) -> Locator:
 
 
 def collect_page_domains(page: Page) -> list[DomainRecord]:
-    page.wait_for_selector(
-        ".el-table__row, table tbody tr, .el-table__body-wrapper tbody tr",
-        timeout=TABLE_TIMEOUT_MS,
-    )
-    time.sleep(DOM_SETTLE_MS / 1000)
-
     all_records: list[DomainRecord] = []
     seen_page_signatures: set[str] = set()
 
@@ -284,12 +280,19 @@ def collect_page_domains(page: Page) -> list[DomainRecord]:
             raise RuntimeError("检测到分页 DOM 未更新，停止以避免无限重复抓取。")
         seen_page_signatures.add(signature)
 
+        incomplete = [record.host for record in page_records if not record.info or "ms/" not in record.info or record.info.endswith("-")]
+        if incomplete:
+            sample = ", ".join(incomplete[:5])
+            raise RuntimeError(
+                f"第 {page_no} 页存在缺少电信延迟/丢包率或下载速度的数据：{len(incomplete)} 条；"
+                f"示例：{sample}"
+            )
+
         all_records.extend(page_records)
 
-        info_count = sum(bool(record.info) for record in page_records)
         print(
             f"[网页] 第 {page_no} 页：{len(page_records)} 条，"
-            f"信息完整 {info_count}/{len(page_records)} 条，"
+            f"信息完整 {len(page_records)}/{len(page_records)} 条，"
             f"累计 {len(all_records)} 条"
         )
 
@@ -305,30 +308,20 @@ def collect_page_domains(page: Page) -> list[DomainRecord]:
         first_row_text = rows.nth(0).inner_text()
         next_button.click()
 
-        try:
-            page.wait_for_function(
-                """(oldText) => {
-                    const rows = document.querySelectorAll(
-                        '.el-table__body-wrapper tbody tr.el-table__row,' +
-                        '.el-table__body tbody tr.el-table__row,' +
-                        'table tbody tr.el-table__row,' +
-                        '.el-table__row'
-                    );
-                    if (!rows.length) return false;
-                    return rows[0].innerText !== oldText;
-                }""",
-                arg=first_row_text,
-                timeout=TABLE_TIMEOUT_MS,
-            )
-        except PlaywrightTimeoutError:
-            page.wait_for_timeout(1000)
-            current_rows = find_data_rows(page)
-            if current_rows.count() == 0:
-                raise RuntimeError("翻页后没有数据行。")
-            if current_rows.nth(0).inner_text() == first_row_text:
-                raise RuntimeError("点击下一页后表格内容没有变化。")
-
-        page.wait_for_timeout(DOM_SETTLE_MS)
+        page.wait_for_function(
+            """(oldText) => {
+                const rows = document.querySelectorAll(
+                    '.el-table__body-wrapper tbody tr.el-table__row,' +
+                    '.el-table__body tbody tr.el-table__row,' +
+                    'table tbody tr.el-table__row'
+                );
+                if (!rows.length) return false;
+                return rows[0].innerText !== oldText;
+            }""",
+            arg=first_row_text,
+            polling=100,
+            timeout=TABLE_TIMEOUT_MS,
+        )
 
     return all_records
 
@@ -361,11 +354,11 @@ def scrape_vps789_page(page_url: str) -> list[DomainRecord]:
                     last_error = exc
                     print(f"[网页] 尝试 {attempt} 失败：{exc}")
                     if attempt < 3:
-                        page.reload(
+                        page.goto(
+                            page_url,
                             wait_until="domcontentloaded",
                             timeout=NAVIGATION_TIMEOUT_MS,
                         )
-                        time.sleep(1)
 
             raise RuntimeError(f"VPS789 网页抓取失败：{last_error}") from last_error
         finally:
@@ -378,17 +371,26 @@ def fetch_top20_api() -> list[DomainRecord]:
         "Accept": "application/json",
     }
 
-    try:
-        with httpx.Client(
-            timeout=httpx.Timeout(20.0, connect=10.0),
-            follow_redirects=True,
-            headers=headers,
-        ) as client:
-            response = client.get(TOP20_API_URL)
-            response.raise_for_status()
-            payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        print(f"[API] 请求失败，跳过 API 补充：{exc}")
+    payload: object | None = None
+    last_error: Exception | None = None
+
+    for attempt in range(1, 4):
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(20.0, connect=10.0),
+                follow_redirects=True,
+                headers=headers,
+            ) as client:
+                response = client.get(TOP20_API_URL)
+                response.raise_for_status()
+                payload = response.json()
+            break
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+            print(f"[API] 请求失败（尝试 {attempt}/3）：{exc}")
+
+    if payload is None:
+        print(f"[API] 3 次请求均失败，跳过 API 补充：{last_error}")
         return []
 
     if not isinstance(payload, dict):
@@ -399,7 +401,12 @@ def fetch_top20_api() -> list[DomainRecord]:
         print(f"[API] 接口返回异常：code={payload.get('code')}")
         return []
 
-    good = ((payload.get("data") or {}).get("good") or [])
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        print("[API] 返回内容缺少 data 对象，跳过 API 补充。")
+        return []
+
+    good = data.get("good")
     if not isinstance(good, list):
         print("[API] data.good 不是数组，跳过 API 补充。")
         return []
@@ -411,21 +418,23 @@ def fetch_top20_api() -> list[DomainRecord]:
         if not isinstance(item, dict):
             continue
 
-        raw_host = item.get("ip")
-        host = display_host(str(raw_host or ""))
+        host = display_host(str(item.get("ip") or ""))
         if not is_plausible_host(host):
             continue
 
         latency = format_number(item.get("dxLatency"))
         loss = format_number(item.get("dxPkgLostRate"))
-
-        # Top20 JSON 当前没有下载速度字段，因此速度留空。
-        info = format_info(latency=latency, loss=loss, speed="")
-
-        record = DomainRecord(host=host, info=info)
-        if record.key in seen:
+        if not latency or not loss:
             continue
 
+        record = DomainRecord(
+            host=host,
+            info=format_info(latency=latency, loss=loss, speed=""),
+            source="api",
+        )
+
+        if record.key in seen:
+            continue
         seen.add(record.key)
         records.append(record)
 
@@ -501,27 +510,16 @@ def main() -> int:
 
     print("=== VPS789 优选域名聚合开始 ===")
     print("网页源：全部分页，数量不做截断，网页源自身不去重")
-    print("API 源：Top20，仅补充网页源中不存在的域名")
+    print("API 源：Top20，仅补充网页源中不存在的域名，并对 API 自身去重")
+    print("网页字段：CF优选IP/域名 + 电信(24H) 延迟/丢包率 + 下载速度")
     print(f"输出目录：{output_dir}")
     print(f"端口：{', '.join(map(str, PORTS))}")
 
     web_records = scrape_vps789_page(args.url)
-    complete_web_info = sum(bool(record.info) for record in web_records)
-    print(
-        f"[网页] 完整抓取：{len(web_records)} 条；"
-        f"电信+下载信息完整：{complete_web_info}/{len(web_records)} 条"
-    )
-
     if not web_records:
         raise RuntimeError("VPS789 网页没有抓到任何域名。")
 
-    # 防止页面结构变化导致“域名全抓到、指标全空”却静默生成错误文件。
-    # 至少有一条完整记录即可继续；若整页全部缺指标则直接报出结构问题。
-    if complete_web_info == 0:
-        raise RuntimeError(
-            "网页域名抓取成功，但电信延迟/丢包率与下载速度全部为空，"
-            "请检查 VPS789 页面结构是否发生变化。"
-        )
+    print(f"[网页] 完整抓取：{len(web_records)} 条；电信+下载信息完整")
 
     api_records = fetch_top20_api()
     merged = merge_sources(web_records=web_records, api_records=api_records)
