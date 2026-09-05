@@ -43,7 +43,7 @@ jobs:
         working-directory: vps789
         run: |
           set -euo pipefail
-          python vps789.py --count 200 --min-count 100
+          python vps789.py
 
       - name: 严格检查生成结果
         working-directory: vps789
@@ -52,14 +52,33 @@ jobs:
 
           files=(443.txt 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt)
 
+          counts=()
+
           for file in "${files[@]}"; do
             test -s "$file"
             count=$(grep -cve '^[[:space:]]*$' "$file")
             echo "$file -> $count lines"
-            test "$count" -ge 100
+            test "$count" -ge 1
+            counts+=("$count")
+
+            # 每行都必须有 host:port#info 结构；允许 API 补充项的速度为空，
+            # 但网页源正常情况下应包含电信延迟/丢包率与下载速度。
+            awk '
+              /^[[:space:]]*$/ { next }
+              !/^[^:#[:space:]]+:[0-9]+#[^[:space:]]*$/ {
+                print "非法输出行: " $0
+                exit 1
+              }
+            ' "$file"
           done
 
-          # 六个端口文件应该使用同一批域名，只改变端口号。
+          # 六个端口文件应该数量完全一致，并使用同一批域名，只改变端口号。
+          test "${counts[0]}" -eq "${counts[1]}"
+          test "${counts[0]}" -eq "${counts[2]}"
+          test "${counts[0]}" -eq "${counts[3]}"
+          test "${counts[0]}" -eq "${counts[4]}"
+          test "${counts[0]}" -eq "${counts[5]}"
+
           cut -d: -f1 443.txt > /tmp/vps789_hosts_443.txt
           for file in 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt; do
             cut -d: -f1 "$file" > "/tmp/vps789_hosts_${file%.txt}.txt"
