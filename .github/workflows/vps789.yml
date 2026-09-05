@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: vps789-update
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -24,6 +24,7 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
       - name: 配置 Python
@@ -35,46 +36,44 @@ jobs:
 
       - name: 恢复 Playwright 浏览器缓存
         id: playwright-cache
+        continue-on-error: true
         uses: actions/cache/restore@v6
         with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ hashFiles('vps789/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-playwright-
+          path: ~/.cache/ms-playwright/chromium_headless_shell-*
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-headless-shell-v1-${{ hashFiles('vps789/requirements.txt') }}
 
       - name: 安装 Python 依赖
         working-directory: vps789
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip --disable-pip-version-check
           python -m pip install --requirement requirements.txt --disable-pip-version-check
 
       - name: 安装 Chromium（缓存未命中）
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps --only-shell chromium
 
       - name: 校验 Chromium 环境
         run: |
           set -euo pipefail
-          test -d "$HOME/.cache/ms-playwright"
           python - <<'PY'
-          from pathlib import Path
           from playwright.sync_api import sync_playwright
 
           with sync_playwright() as p:
-              executable = Path(p.chromium.executable_path)
-              print(f"Chromium executable: {executable}")
-              if not executable.is_file():
-                  raise SystemExit("Chromium 浏览器安装不完整：可执行文件不存在。")
+              browser = p.chromium.launch(headless=True)
+              page = browser.new_page()
+              page.goto("about:blank")
+              print("Chromium headless launch: PASS")
+              browser.close()
           PY
 
       - name: 保存 Playwright 浏览器缓存
-        if: ${{ always() && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.playwright-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v6
         with:
-          path: ~/.cache/ms-playwright
+          path: ~/.cache/ms-playwright/chromium_headless_shell-*
           key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
 
       - name: 抓取并生成六个端口文件
