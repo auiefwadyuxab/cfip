@@ -11,11 +11,12 @@ permissions:
 
 concurrency:
   group: vps789-update
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: 检出仓库
@@ -30,9 +31,18 @@ jobs:
           cache: pip
           cache-dependency-path: vps789/requirements.txt
 
+      - name: 缓存 Playwright 浏览器
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-1.62.0
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: 安装 Python 依赖
         working-directory: vps789
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
@@ -51,43 +61,53 @@ jobs:
           set -euo pipefail
 
           files=(443.txt 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt)
-
+          expected_ports=(443 8443 2053 2083 2087 2096)
           counts=()
 
-          for file in "${files[@]}"; do
+          for i in "${!files[@]}"; do
+            file="${files[$i]}"
+            port="${expected_ports[$i]}"
+
             test -s "$file"
             count=$(grep -cve '^[[:space:]]*$' "$file")
             echo "$file -> $count lines"
             test "$count" -ge 1
             counts+=("$count")
 
-            # 每行都必须有 host:port#info 结构；允许 API 补充项的速度为空，
-            # 但网页源正常情况下应包含电信延迟/丢包率与下载速度。
-            awk '
+            awk -v port="$port" '
               /^[[:space:]]*$/ { next }
-              !/^[^:#[:space:]]+:[0-9]+#[^[:space:]]*$/ {
-                print "非法输出行: " $0
-                exit 1
+              {
+                prefix = "^([^:#[:space:]]+):" port "#"
+                if ($0 !~ prefix) {
+                  print "非法输出行（端口或结构错误）: " $0
+                  exit 1
+                }
+                info = $0
+                sub(/^.*#/, "", info)
+                # 网页源必须包含 ms；API 补充项允许没有下载速度，但仍必须有延迟/丢包率。
+                if (info !~ /^[0-9]+(?:\.[0-9]+)?ms\/[0-9]+(?:\.[0-9]+)?-[0-9]+(?:\.[0-9]+)?(KB|MB|GB|TB)\/s$/ &&
+                    info !~ /^[0-9]+(?:\.[0-9]+)?ms\/[0-9]+(?:\.[0-9]+)?-$/) {
+                  print "非法 info: " $0
+                  exit 1
+                }
               }
             ' "$file"
           done
 
-          # 六个端口文件应该数量完全一致，并使用同一批域名，只改变端口号。
-          test "${counts[0]}" -eq "${counts[1]}"
-          test "${counts[0]}" -eq "${counts[2]}"
-          test "${counts[0]}" -eq "${counts[3]}"
-          test "${counts[0]}" -eq "${counts[4]}"
-          test "${counts[0]}" -eq "${counts[5]}"
+          for i in 1 2 3 4 5; do
+            test "${counts[0]}" -eq "${counts[$i]}"
+          done
 
-          cut -d: -f1 443.txt > /tmp/vps789_hosts_443.txt
+          awk -F'#' '{sub(/:[0-9]+$/, "", $1); print $1}' 443.txt > /tmp/vps789_hosts_443.txt
           for file in 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt; do
-            cut -d: -f1 "$file" > "/tmp/vps789_hosts_${file%.txt}.txt"
+            awk -F'#' '{sub(/:[0-9]+$/, "", $1); print $1}' "$file" > "/tmp/vps789_hosts_${file%.txt}.txt"
             cmp -s /tmp/vps789_hosts_443.txt "/tmp/vps789_hosts_${file%.txt}.txt"
           done
 
       - name: 提交并推送
         env:
           TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+        working-directory: .
         run: |
           set -euo pipefail
 
@@ -107,9 +127,17 @@ jobs:
           fi
 
           now="$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
+          git diff --cached --check
           git commit -m "vps789: update ${now}"
 
-          # 在提交后同步默认分支，避免调度期间出现并发提交导致 push 拒绝。
-          git fetch origin "${TARGET_BRANCH}"
-          git rebase "origin/${TARGET_BRANCH}"
-          git push origin "HEAD:${TARGET_BRANCH}"
+          # 提交后工作树已干净，可以安全地同步远端并处理极短的并发窗口。
+          for attempt in 1 2 3; do
+            git fetch origin "${TARGET_BRANCH}"
+            git rebase "origin/${TARGET_BRANCH}"
+            if git push origin "HEAD:${TARGET_BRANCH}"; then
+              exit 0
+            fi
+          done
+
+          echo "推送在 3 次尝试后仍失败。" >&2
+          exit 1
