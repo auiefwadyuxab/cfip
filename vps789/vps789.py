@@ -235,21 +235,50 @@ def extract_record_from_row(
     )
 
 
+DATA_ROW_SELECTORS = (
+    ".el-table__body-wrapper tbody tr.el-table__row",
+    ".el-table__body tbody tr.el-table__row",
+    "table tbody tr.el-table__row",
+    ".el-table__body-wrapper tbody tr",
+    ".el-table__body tbody tr",
+    "table tbody tr",
+)
+DATA_ROW_SELECTOR = ",".join(DATA_ROW_SELECTORS)
+
+
 def find_data_rows(page: Page) -> Locator:
-    selectors = (
-        ".el-table__body-wrapper tbody tr.el-table__row",
-        ".el-table__body tbody tr.el-table__row",
-        "table tbody tr.el-table__row",
-        ".el-table__row",
-    )
-    for selector in selectors:
+    for selector in DATA_ROW_SELECTORS:
         locator = page.locator(selector)
         if locator.count():
             return locator
     return page.locator("table tbody tr")
 
 
+def wait_for_data_rows(page: Page) -> None:
+    """Wait for VPS789's asynchronously rendered table to contain real body rows.
+
+    DOMContentLoaded alone is insufficient because the table data arrives after
+    the page script performs its own asynchronous request/render.
+    """
+    page.wait_for_function(
+        """(selector) => {
+            const rows = Array.from(document.querySelectorAll(selector));
+            return rows.some((row) => {
+                const cells = Array.from(row.querySelectorAll('td'));
+                return cells.length > 0 && cells.some((cell) => {
+                    const text = (cell.innerText || cell.textContent || '').trim();
+                    return text.length > 0;
+                });
+            });
+        }""",
+        arg=DATA_ROW_SELECTOR,
+        polling=100,
+        timeout=TABLE_TIMEOUT_MS,
+    )
+
+
 def collect_page_domains(page: Page) -> list[DomainRecord]:
+    wait_for_data_rows(page)
     all_records: list[DomainRecord] = []
     seen_page_signatures: set[str] = set()
 
@@ -305,20 +334,19 @@ def collect_page_domains(page: Page) -> list[DomainRecord]:
         if not next_button.count() or next_button.is_disabled():
             break
 
-        first_row_text = rows.nth(0).inner_text()
+        old_signature = "\n".join(
+            rows.nth(i).inner_text() for i in range(min(2, row_count))
+        )
         next_button.click()
 
         page.wait_for_function(
-            """(oldText) => {
-                const rows = document.querySelectorAll(
-                    '.el-table__body-wrapper tbody tr.el-table__row,' +
-                    '.el-table__body tbody tr.el-table__row,' +
-                    'table tbody tr.el-table__row'
-                );
+            """(args) => {
+                const rows = Array.from(document.querySelectorAll(args.selector));
                 if (!rows.length) return false;
-                return rows[0].innerText !== oldText;
+                const signature = rows.slice(0, 2).map((row) => row.innerText).join('\n');
+                return signature !== args.oldSignature && signature.trim().length > 0;
             }""",
-            arg=first_row_text,
+            arg={"selector": DATA_ROW_SELECTOR, "oldSignature": old_signature},
             polling=100,
             timeout=TABLE_TIMEOUT_MS,
         )
@@ -354,11 +382,15 @@ def scrape_vps789_page(page_url: str) -> list[DomainRecord]:
                     last_error = exc
                     print(f"[网页] 尝试 {attempt} 失败：{exc}")
                     if attempt < 3:
-                        page.goto(
-                            page_url,
-                            wait_until="domcontentloaded",
-                            timeout=NAVIGATION_TIMEOUT_MS,
-                        )
+                        # 每次重试都从入口 URL 重新开始，避免上一次分页/半渲染状态残留。
+                        try:
+                            page.goto(
+                                page_url,
+                                wait_until="domcontentloaded",
+                                timeout=NAVIGATION_TIMEOUT_MS,
+                            )
+                        except Exception as retry_nav_exc:
+                            last_error = retry_nav_exc
 
             raise RuntimeError(f"VPS789 网页抓取失败：{last_error}") from last_error
         finally:
@@ -397,8 +429,9 @@ def fetch_top20_api() -> list[DomainRecord]:
         print("[API] 返回内容不是 JSON 对象，跳过 API 补充。")
         return []
 
-    if payload.get("code") not in (0, None):
-        print(f"[API] 接口返回异常：code={payload.get('code')}")
+    code = payload.get("code")
+    if code not in (0, "0", None):
+        print(f"[API] 接口返回异常：code={code}")
         return []
 
     data = payload.get("data")
