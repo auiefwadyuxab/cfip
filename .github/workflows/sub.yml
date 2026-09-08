@@ -1,0 +1,61 @@
+name: Extract VLESS Nodes
+
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+      timezone: 'Asia/Taipei'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extract-vless
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install requests
+        run: python -m pip install --disable-pip-version-check --no-input 'requests==2.34.2'
+
+      - name: Extract VLESS host:port
+        env:
+          SUB: ${{ secrets.sub }}
+          PYTHONUNBUFFERED: '1'
+        run: python sub/sub.py
+
+      - name: Check output integrity
+        run: |
+          test -s sub/sub.txt
+          test "$(grep -c . sub/sub.txt)" -eq "$(wc -l < sub/sub.txt)"
+          if grep -nE '[[:space:]]|^$' sub/sub.txt; then
+            echo 'sub.txt contains blank lines or whitespace.' >&2
+            exit 1
+          fi
+
+      - name: Commit updated sub.txt
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add sub/sub.txt
+          if git diff --cached --quiet; then
+            echo 'No changes to sub/sub.txt.'
+            exit 0
+          fi
+          git commit -m 'chore: update VLESS endpoints'
+          git push
