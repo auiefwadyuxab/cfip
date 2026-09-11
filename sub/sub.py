@@ -40,6 +40,7 @@ RETRY_BACKOFF = max(1.0, float(os.getenv("SUB_RETRY_BACKOFF", "2")))
 MAX_REDIRECTS = max(0, int(os.getenv("SUB_MAX_REDIRECTS", "5")))
 
 BLOCKED_ENDPOINTS = {"127.0.0.1:1234"}
+BLOCKED_ENDPOINTS_TEXT = "、".join(sorted(BLOCKED_ENDPOINTS))
 VLESS_PREFIX = "vless://"
 BASE64_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
 HOSTNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
@@ -66,7 +67,7 @@ SOURCE_LABELS = (
     "DanFeng",
 )
 SOURCE_LABEL_SET = set(SOURCE_LABELS)
-SOURCE_PATTERN = re.compile(r"\[([^\[\]]+)\]")
+SOURCE_PATTERN = re.compile(r"\[(" + "|".join(re.escape(label) for label in SOURCE_LABELS) + r")\]")
 
 
 @dataclass
@@ -365,17 +366,15 @@ def split_endpoint(endpoint: str) -> tuple[str, int]:
 
 
 def source_from_line(line: str) -> str | None:
-    """只识别用户指定的 14 个订阅器标签。"""
+    """从 VLESS 备注中识别用户指定的订阅器标签。"""
     try:
         fragment = unquote(urlsplit(line.strip()).fragment)
     except ValueError:
         return None
 
-    for label in SOURCE_LABELS:
-        if f"[{label}]" in fragment:
-            return label
-        if fragment.strip() == label:
-            return label
+    match = SOURCE_PATTERN.search(fragment)
+    if match:
+        return match.group(1)
     return None
 
 
@@ -456,59 +455,119 @@ def write_output(nodes: list[str]) -> None:
         fail("写盘后发现空行或空白字符")
 
 
-def write_stats(stats_list: list[SubscriptionStats], total_vless: int, total_nodes: int) -> None:
+def _source_status(raw_count: int, unique_count: int, blocked: int) -> tuple[str, str]:
+    """返回来源状态和简短说明。"""
+    if blocked:
+        return "⚠", f"异常：{BLOCKED_ENDPOINTS_TEXT}"
+    if unique_count > 0:
+        return "✓", "正常"
+    if raw_count > 0:
+        return "⚠", "异常：无有效 HOST:PORT"
+    return "✖", "未返回节点"
+
+
+def _format_source_diagnostics(stats: SubscriptionStats) -> list[str]:
+    """只有实际命中指定订阅器的连接才展开 14 个来源的诊断。"""
+    if not stats.source_vless_lines:
+        return []
+
+    raw_total = sum(stats.source_vless_lines.values())
+    unique_union = stats.recognized_source_union
+    normal = 0
+    abnormal = 0
+    missing = 0
     lines = [
-        "订阅聚合 · 运行统计",
-        "═" * 42,
-        f"订阅连接数：{len(stats_list)}",
-        f"VLESS 总行数：{total_vless}",
+        "  ┌─ 订阅器检测",
+        f"  │ 本面板命中 {len(SOURCE_LABELS)} 个指定订阅器标签",
+    ]
+
+    for source in SOURCE_LABELS:
+        raw_count = stats.source_vless_lines.get(source, 0)
+        unique_count = len(stats.sources.get(source, set()))
+        blocked = stats.source_blocked.get(source, 0)
+        icon, note = _source_status(raw_count, unique_count, blocked)
+        if raw_count == 0:
+            missing += 1
+        elif icon == "✓":
+            normal += 1
+        else:
+            abnormal += 1
+
+        if blocked:
+            detail = f"{raw_count} 条 · {unique_count} 个 · {note} · 过滤 {blocked} 条"
+        else:
+            detail = f"{raw_count} 条 · {unique_count} 个 · {note}"
+        lines.append(f"  │ {icon} {source}：{detail}")
+
+    lines.extend(
+        [
+            "  │",
+            f"  │ 合计：{raw_total} 条 VLESS · {len(unique_union)} 个来源唯一 HOST:PORT",
+            f"  │ 状态：正常 {normal} · 异常 {abnormal} · 未返回 {missing}",
+            "  └─ 以上仅用于订阅器诊断，不参与节点过滤或全局去重",
+        ]
+    )
+    return lines
+
+
+def write_stats(stats_list: list[SubscriptionStats], total_vless: int, total_nodes: int) -> None:
+    """生成简洁运行统计；来源诊断仅展示实际命中的订阅器面板。"""
+    lines = [
+        "╔══════════════════════════════════════════╗",
+        "║             订阅聚合 · 运行统计          ║",
+        "╚══════════════════════════════════════════╝",
+        f"订阅连接：{len(stats_list)}",
+        f"VLESS 总数：{total_vless}",
         f"最终唯一 HOST:PORT：{total_nodes}",
         "",
     ]
 
+    source_connections = 0
     for stats in stats_list:
+        has_sources = bool(stats.source_vless_lines)
+        if has_sources:
+            source_connections += 1
+            title = f"【连接 {stats.index:02d}】订阅器面板"
+        else:
+            title = f"【连接 {stats.index:02d}】节点面板"
+
         lines.extend(
             [
-                f"连接 {stats.index:02d}",
-                f"  VLESS：{stats.vless_lines}",
-                f"  有效 HOST:PORT：{stats.valid_endpoints}",
-                f"  本连接去重后：{stats.unique_endpoints}",
-                f"  本连接重复：{stats.duplicate_endpoints}",
-                f"  与前面连接重复：{stats.cross_subscription_duplicates}",
-                f"  过滤本机：{stats.blocked_endpoints}",
-                f"  无效行：{stats.invalid_lines}",
-                f"  对最终结果贡献：{stats.contributed_endpoints}",
+                title,
+                f"  VLESS：{stats.vless_lines} · 有效：{stats.valid_endpoints}",
+                f"  本连接唯一：{stats.unique_endpoints} · 本连接重复：{stats.duplicate_endpoints}",
+                f"  前序重复：{stats.cross_subscription_duplicates} · 最终贡献：{stats.contributed_endpoints}",
+                f"  无效行：{stats.invalid_lines} · 过滤本机：{stats.blocked_endpoints}",
             ]
         )
-
-        lines.append("  指定订阅器检测：")
-        lines.append("    （只用于判断订阅器本次是否正常返回；不参与节点过滤或全局去重）")
-        recognized_union = stats.recognized_source_union
-        for source in SOURCE_LABELS:
-            raw_count = stats.source_vless_lines.get(source, 0)
-            endpoints = stats.sources.get(source, set())
-            blocked = stats.source_blocked.get(source, 0)
-            unique_count = len(endpoints)
-            if raw_count == 0:
-                status = "未发现节点"
-            elif unique_count > 0:
-                status = "正常"
-            elif blocked:
-                status = "有返回，但仅本机节点"
-            else:
-                status = "有返回，但无有效 HOST:PORT"
-            suffix = f"，过滤本机：{blocked}" if blocked else ""
-            lines.append(
-                f"    {source}：VLESS {raw_count}，来源唯一 {unique_count}{suffix}，状态：{status}"
-            )
-        lines.append(f"    指定订阅器合计（跨来源去重）：{len(recognized_union)}")
+        if stats.blocked_endpoints:
+            lines.append(f"  ⚠ 异常地址：{BLOCKED_ENDPOINTS_TEXT}（共 {stats.blocked_endpoints} 条）")
+        source_lines = _format_source_diagnostics(stats)
+        if source_lines:
+            lines.extend(["", *source_lines])
         lines.append("")
 
-    # 文本文件本身只包含中文统计，不包含任何订阅 URL。
+    if source_connections == 0:
+        lines.extend(
+            [
+                "订阅器诊断：本次没有发现指定订阅器标签。",
+                "其他来源不进入订阅器诊断。",
+            ]
+        )
+    else:
+        lines.insert(6, f"订阅器诊断面板：{source_connections} 个")
+        lines.insert(7, "")
+
     payload = "\n".join(lines).rstrip() + "\n"
     tmp = STATS_FILE.with_name(STATS_FILE.name + ".tmp")
     tmp.write_text(payload, encoding="utf-8", newline="\n")
     tmp.replace(STATS_FILE)
+
+    # 统计文件不得泄露订阅地址或 token。
+    written = STATS_FILE.read_text(encoding="utf-8")
+    if re.search(r"https?://|(?:^|[^A-Za-z])token[=:]", written, re.IGNORECASE):
+        fail("统计文件完整性校验失败：检测到 URL 或 token 字样")
+
 
 
 def redact(value: str) -> str:
@@ -571,7 +630,12 @@ def main() -> int:
     print(f"统计文件：{STATS_FILE}")
     print("✓ 完整性：输出行数 = 全局唯一 HOST:PORT")
     print("✓ 过滤：127.0.0.1:1234")
-    print("✓ 统计：仅检测指定订阅器，其他来源不展示且不参与来源统计")
+    source_connection_count = sum(bool(s.source_vless_lines) for s in stats_list)
+    if source_connection_count:
+        print(f"✓ 订阅器诊断：仅展开 {source_connection_count} 个实际命中指定来源的连接")
+    else:
+        print("✓ 订阅器诊断：本次未发现指定来源标签")
+    print("✓ 其他来源：不进入订阅器诊断")
     print("═" * 56)
     return 0
 
