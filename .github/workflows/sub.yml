@@ -1,61 +1,69 @@
-name: Extract VLESS Nodes
+name: 订阅聚合
 
 on:
   schedule:
     - cron: '17 */3 * * *'
-      timezone: 'Asia/Taipei'
+      timezone: 'Asia/Tokyo'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: extract-vless
+  group: 订阅聚合
   cancel-in-progress: false
 
 jobs:
-  extract:
+  aggregate:
+    name: 订阅聚合
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout
+      - name: 检出仓库
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - name: Set up Python
+      - name: 配置 Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           cache: pip
 
-      - name: Install requests
+      - name: 安装 requests
         run: python -m pip install --disable-pip-version-check --no-input 'requests==2.34.2'
 
-      - name: Extract VLESS host:port
+      - name: 运行订阅聚合
         env:
           SUB: ${{ secrets.sub }}
           PYTHONUNBUFFERED: '1'
         run: python sub/sub.py
 
-      - name: Check output integrity
+      - name: 校验输出完整性
         run: |
           test -s sub/sub.txt
-          test "$(grep -c . sub/sub.txt)" -eq "$(wc -l < sub/sub.txt)"
+          test "$(wc -l < sub/sub.txt)" -eq "$(awk 'END { print NR }' sub/sub.txt)"
+          test "$(grep -cE '^.+:[0-9]{1,5}$' sub/sub.txt)" -eq "$(wc -l < sub/sub.txt)"
           if grep -nE '[[:space:]]|^$' sub/sub.txt; then
-            echo 'sub.txt contains blank lines or whitespace.' >&2
+            echo 'sub/sub.txt 包含空行或空白字符。' >&2
             exit 1
           fi
+          if grep -nFx '127.0.0.1:1234' sub/sub.txt; then
+            echo '发现禁止输出的 127.0.0.1:1234。' >&2
+            exit 1
+          fi
+          test "$(sort -f sub/sub.txt | uniq -d | wc -l)" -eq 0
+          echo "最终输出节点数：$(wc -l < sub/sub.txt)"
 
-      - name: Commit updated sub.txt
+      - name: 提交节点与统计
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add sub/sub.txt
+          git add sub/sub.txt sub/sub_stats.txt
           if git diff --cached --quiet; then
-            echo 'No changes to sub/sub.txt.'
+            echo '节点与统计均无变化。'
             exit 0
           fi
-          git commit -m 'chore: update VLESS endpoints'
+          git commit -m 'chore: 更新订阅聚合结果'
           git push
