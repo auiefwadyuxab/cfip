@@ -1,0 +1,172 @@
+IP地址,端口号,TLS,数据中心,源IP位置,地区,城市,地区(中文),国家,城市(中文),国旗,网络延迟,出站IP,IP类型,访问协议,TLS版本,SNI,HTTP版本,WARP,Gateway,RBI,密钥交换,时间戳
+18.166.242.223,443,TRUE,HKG,HK,Asia Pacific,Hong Kong,亚洲,香港,香港,????,43 ms,18.166.242.223,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365714
+95.40.61.115,443,TRUE,HKG,HK,Asia Pacific,Hong Kong,亚洲,香港,香港,????,44 ms,95.40.61.115,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365616
+16.162.53.213,443,TRUE,HKG,HK,Asia Pacific,Hong Kong,亚洲,香港,香港,????,44 ms,16.162.53.213,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365593
+13.248.215.36,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,46 ms,18.201.171.239,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365582
+166.117.143.12,443,TRUE,IAD,US,North America,Dulles,北美洲,美国,杜勒斯,????,47 ms,44.222.154.223,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365582
+52.196.133.194,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,47 ms,2406:da14:af3:6900:5584:d049:1eaf:32af,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367183
+99.83.207.43,443,TRUE,IAD,US,North America,Dulles,北美洲,美国,杜勒斯,????,47 ms,3.90.178.98,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365582
+18.176.53.139,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,47 ms,18.176.53.139,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365599
+15.197.162.87,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,47 ms,35.85.29.108,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365609
+166.117.43.102,443,TRUE,IAD,US,North America,Dulles,北美洲,美国,杜勒斯,????,47 ms,3.230.145.37,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365582
+43.207.197.79,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,48 ms,2406:da14:f36:9b00:5ea1:eaee:e645:bc5f,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367603
+57.180.27.78,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,48 ms,2406:da14:1f13:2e00:61cf:c18c:bc9e:9c1,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365614
+57.180.7.188,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,48 ms,57.180.7.188,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367580
+54.250.146.68,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,48 ms,2406:da14:c20:ac00:8b2b:9f1d:9ff9:6e58,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365616
+52.198.202.25,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,48 ms,52.198.202.25,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365608
+18.180.75.128,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,48 ms,2406:da14:285:cb00:b7bf:6741:6478:db9b,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367191
+75.2.79.84,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,48 ms,52.41.2.155,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365582
+13.231.5.138,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,49 ms,2406:da14:94:7600:c37f:eea5:170b:febe,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367188
+54.65.254.1,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,49 ms,2406:da14:15d4:cf00:a4d:3e20:3699:a68b,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365634
+54.65.218.189,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,49 ms,54.65.218.189,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367184
+54.95.94.250,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,49 ms,54.95.94.250,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367597
+52.195.228.243,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,49 ms,2406:da14:1f87:3300:d99:1087:b5db:2759,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365626
+35.79.146.187,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,49 ms,2406:da14:1441:4f00:10fe:a324:c958:e2b4,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367181
+166.117.33.104,443,TRUE,IAD,US,North America,Dulles,北美洲,美国,杜勒斯,????,50 ms,44.222.154.223,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365581
+76.223.33.155,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,50 ms,52.88.46.51,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365581
+166.117.140.55,443,TRUE,IAD,US,North America,Dulles,北美洲,美国,杜勒斯,????,50 ms,3.90.178.98,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365581
+75.2.58.141,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,50 ms,52.88.46.51,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365581
+54.64.133.73,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,50 ms,2406:da14:185f:8b00:b247:8675:53fe:7208,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367184
+3.33.157.34,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,50 ms,52.41.2.155,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365581
+18.183.105.56,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,50 ms,2406:da14:1650:df00:53af:6fb7:907b:b9d2,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365597
+54.250.226.15,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,50 ms,2406:da14:1a22:d900:cb47:41eb:9e7c:dfea,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365613
+52.197.217.169,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,50 ms,52.197.217.169,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365608
+54.248.72.189,8443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,51 ms,2406:da14:1e23:9400:56a1:4df9:8e03:8352,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368062
+52.194.7.110,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,59 ms,52.194.7.110,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365617
+43.200.87.5,443,TRUE,ICN,KR,Asia Pacific,Seoul,亚洲,韩国,首尔,????,63 ms,2406:da12:faf:7b00:689e:fec4:89ba:1a38,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365637
+18.141.102.218,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,71 ms,2406:da18:6c6:b100:a08f:3ed7:4d9:3b36,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365594
+76.223.77.48,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,71 ms,18.201.171.239,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365606
+35.74.223.252,443,TRUE,NRT,JP,Asia Pacific,Tokyo,亚洲,日本,东京,????,72 ms,35.74.223.252,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365671
+18.138.70.109,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,73 ms,2406:da18:a37:6430:2665:a27e:2bf2:de35,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365594
+54.151.249.183,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,73 ms,54.151.249.183,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365644
+54.255.210.30,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,74 ms,2406:da18:889:9700:6d0f:d7e4:1b73:b994,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367207
+13.229.65.190,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,74 ms,2406:da18:4d6:2200:bf6d:8e35:d66e:3ec9,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367198
+52.76.97.123,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,74 ms,2406:da18:1979:5f00:9793:b9af:3f31:359,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367183
+18.142.46.41,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,74 ms,18.142.46.41,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367571
+54.254.75.107,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,74 ms,2406:da18:1c75:8400:8aa3:9d92:faa:43d9,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367186
+52.76.194.79,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,74 ms,52.76.194.79,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365606
+13.212.173.157,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,75 ms,2406:da18:b2b:50a6:ad74:64a5:f21e:e240,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365619
+54.151.146.21,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,75 ms,2406:da18:c91:6600:713b:6b1b:d44d:b0c5,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365610
+18.139.162.187,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,76 ms,18.139.162.187,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367606
+52.220.111.120,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,76 ms,2406:da18:1bc3:9e00:957b:ad4a:37a5:de67,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367184
+18.143.95.22,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,76 ms,52.76.194.79,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367600
+54.151.131.18,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,77 ms,2406:da18:580:a901:82df:a3d:1bea:21f6,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365610
+47.129.204.216,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,78 ms,2406:da18:b2b:5023:d87a:a5b6:6a87:534f,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365633
+43.212.202.45,443,TRUE,TPE,TW,Asia Pacific,Taipei,亚洲,台湾,台北,????,79 ms,43.212.202.45,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365617
+13.212.57.14,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,79 ms,2406:da18:1e6f:f600:8edb:a4b5:dce2:5d25,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367175
+43.213.148.173,443,TRUE,TPE,TW,Asia Pacific,Taipei,亚洲,台湾,台北,????,79 ms,43.212.202.45,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365649
+13.215.203.115,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,80 ms,2406:da18:1f0:2400:a062:bd83:e90b:4eca,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365591
+54.151.227.203,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,80 ms,2406:da18:78e:b100:2f6f:57f9:af60:b101,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367230
+52.221.156.212,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,80 ms,52.221.156.212,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365609
+13.212.52.32,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,81 ms,2a14:7dc0:101:107a::bed3,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365710
+18.136.194.60,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,82 ms,2406:da18:642:e100:35d5:3a91:2d6:9249,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365621
+13.250.131.37,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,83 ms,13.250.131.37,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365657
+18.143.76.130,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,84 ms,2406:da18:797:cb00:e2e0:f26a:24fd:936,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365619
+54.169.53.9,443,TRUE,SIN,SG,Asia Pacific,Singapore,亚洲,新加坡,新加坡,????,89 ms,2406:da18:1595:4d01:7383:413d:7aa3:a22d,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365636
+43.208.252.102,22222,TRUE,BKK,TH,Asia Pacific,Bangkok,亚洲,泰国,曼谷,????,102 ms,43.208.252.102,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368859
+13.126.35.51,443,TRUE,BOM,IN,Asia Pacific,Mumbai,亚洲,印度,孟买,????,153 ms,2406:da1a:d9c:9f00:7aaf:4a49:1fb5:4c73,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365647
+3.110.30.255,443,TRUE,BOM,IN,Asia Pacific,Mumbai,亚洲,印度,孟买,????,154 ms,2406:da1a:f04:0:df6f:e760:3b2f:c50b,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365586
+13.204.131.122,443,TRUE,BOM,IN,Asia Pacific,Mumbai,亚洲,印度,孟买,????,155 ms,2406:da1a:e03:f200:f53e:39ee:7fc0:608e,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367616
+52.66.217.91,443,TRUE,BOM,IN,Asia Pacific,Mumbai,亚洲,印度,孟买,????,156 ms,52.66.217.91,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365627
+16.176.42.97,443,TRUE,PER,AU,Oceania,Perth,大洋洲,澳大利亚,珀斯,????,156 ms,16.176.42.97,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365634
+3.10.88.36,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,170 ms,3.10.88.36,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367217
+52.56.168.34,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,170 ms,2a05:d01c:771:d600:102d:8d96:91d9:6c57,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365759
+18.132.0.73,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,171 ms,18.132.0.73,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365661
+35.176.187.206,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,171 ms,35.176.187.206,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367662
+3.252.156.154,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,178 ms,3.252.156.154,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367566
+3.250.142.12,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,179 ms,3.250.142.12,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367173
+34.248.75.100,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,180 ms,34.248.75.100,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367586
+34.245.69.90,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,180 ms,34.245.69.90,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365602
+52.19.138.237,8443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,182 ms,52.19.138.237,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368551
+13.57.0.54,443,TRUE,SJC,US,North America,San Jose,北美洲,美国,圣何塞,????,195 ms,13.57.0.54,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367568
+184.169.181.217,443,TRUE,SJC,US,North America,San Jose,北美洲,美国,圣何塞,????,196 ms,184.169.181.217,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365617
+52.52.166.93,8443,TRUE,SJC,US,North America,San Jose,北美洲,美国,圣何塞,????,200 ms,52.52.166.93,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368060
+16.144.176.211,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,200 ms,2600:1f14:295b:d100:ce3c:5c89:d66a:5953,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367209
+16.145.218.182,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,201 ms,2600:1f14:1fb:fb00:5a9b:b2cd:603a:59af,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367227
+184.32.79.159,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,202 ms,2600:1f14:2f5b:6700:74c9:d488:922e:ad7a,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367191
+44.228.254.176,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,203 ms,2600:1f14:1624:1800:4ccd:1f84:d215:b50a,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367182
+54.183.223.218,443,TRUE,SJC,US,North America,San Jose,北美洲,美国,圣何塞,????,203 ms,2600:1f1c:642:5938:9a00:e18b:1a71:1206,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367185
+52.57.222.50,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,204 ms,52.57.222.50,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367183
+35.156.134.213,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,204 ms,35.156.134.213,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365652
+63.178.166.91,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,204 ms,63.178.166.91,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365722
+54.202.144.146,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,205 ms,2600:1f14:1a56:1600:ad33:f91:b78e:7d0d,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367199
+44.247.78.252,5010,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,205 ms,2600:1f14:1a3b:7b00:7053:7279:43b5:e886,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367970
+54.153.62.161,443,TRUE,SJC,US,North America,San Jose,北美洲,美国,圣何塞,????,205 ms,54.153.62.161,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365611
+100.23.124.155,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,205 ms,100.23.124.155,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365712
+18.199.97.136,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,206 ms,18.199.97.136,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367621
+213.170.157.1,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,206 ms,185.71.228.0,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367191
+44.246.4.70,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,206 ms,2600:1f13:5f0:ab00:b7c0:90cf:366d:a259,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365650
+54.190.252.67,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,207 ms,35.91.146.7,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365651
+34.219.143.144,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,207 ms,2600:1f13:e6d:1c00:275c:e4b1:2e22:d417,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367181
+34.212.240.129,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,208 ms,34.212.240.129,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365749
+54.200.155.142,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,208 ms,52.41.2.155,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365611
+44.239.217.174,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,208 ms,52.88.46.51,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365648
+54.189.115.254,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,208 ms,44.255.73.202,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365611
+18.192.69.254,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,209 ms,18.192.69.254,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367594
+52.43.37.114,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,210 ms,2600:1f14:2343:ac00:528a:2a42:64da:e17d,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365646
+34.222.161.163,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,210 ms,2600:1f14:3da7:9d00:3627:18c0:67bb:c565,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365624
+34.208.124.206,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,210 ms,34.208.124.206,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365653
+51.34.85.34,443,TRUE,ZRH,CH,Europe,Zurich,欧洲,瑞士,苏黎世,????,210 ms,51.34.85.34,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367191
+63.181.32.213,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,210 ms,2a05:d014:15ec:1600:1259:b635:930d:e60d,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367200
+18.132.12.142,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,211 ms,2a05:d01c:82d:38cd:4df8:452b:45de:2cb8,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365632
+3.72.93.27,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,211 ms,2a05:d014:8b9:9a02:ccdb:ae9f:d98f:3312,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367188
+18.134.196.127,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,211 ms,18.134.196.127,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367178
+52.53.203.76,443,TRUE,SJC,US,North America,San Jose,北美洲,美国,圣何塞,????,211 ms,52.53.203.76,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365607
+52.57.33.209,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,211 ms,2a05:d014:d9a:2000:9bf:4d5e:a15a:ebba,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367575
+16.63.207.85,443,TRUE,ZRH,CH,Europe,Zurich,欧洲,瑞士,苏黎世,????,211 ms,16.63.207.85,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365616
+3.78.97.64,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,212 ms,2a05:d014:17af:ed00:867a:57c1:96af:ae45,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365586
+18.185.128.209,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,212 ms,2a05:d014:95:7c00:fb8f:dd62:a430:e204,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367191
+3.69.166.229,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,212 ms,3.69.166.229,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365628
+40.177.65.8,443,TRUE,YYC,CA,North America,Calgary,北美洲,加拿大,卡尔加里,????,213 ms,40.177.65.8,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365629
+52.27.220.177,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,213 ms,34.221.207.204,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365701
+54.201.163.91,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,213 ms,44.255.73.202,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365612
+44.254.165.51,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,213 ms,35.91.146.7,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365658
+44.251.109.101,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,213 ms,2600:1f14:3ca2:1d00:6874:396f:a5b7:ad56,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365619
+100.21.232.129,9997,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,214 ms,35.81.157.228,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777369388
+184.34.35.49,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,214 ms,35.91.146.7,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365641
+52.35.33.49,443,TRUE,PDX,US,North America,Portland,北美洲,美国,波特兰,????,215 ms,35.93.132.97,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365607
+18.168.115.249,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,216 ms,18.168.115.249,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365632
+18.130.235.174,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,217 ms,18.130.235.174,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365595
+34.240.243.226,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,218 ms,2a05:d018:1469:8500:533:f934:5a86:81f6,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367181
+18.170.77.148,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,220 ms,18.170.77.148,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367179
+13.42.88.29,443,TRUE,LHR,GB,Europe,London,欧洲,英国,伦敦,????,220 ms,13.42.88.29,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365627
+15.188.50.74,443,TRUE,CDG,FR,Europe,Paris,欧洲,法国,巴黎,????,223 ms,2a05:d012:e17:5702:4f6e:eaa:eda9:b294,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365637
+34.250.168.254,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,224 ms,34.250.168.254,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367574
+18.201.171.239,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,226 ms,18.201.171.239,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365638
+34.244.65.73,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,226 ms,2a05:d018:70b:9400:3676:cac9:ff6e:a355,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365662
+63.32.194.15,8443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,226 ms,63.32.194.15,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368069
+51.21.59.130,8080,TRUE,ARN,SE,Europe,Stockholm,欧洲,瑞典,斯德哥尔摩,????,226 ms,2a05:d016:4d:3a00:4384:ad50:5a50:8d91,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777369205
+108.131.66.207,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,227 ms,108.131.66.207,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367584
+54.74.30.135,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,227 ms,54.74.30.135,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365621
+51.21.59.26,443,TRUE,ARN,SE,Europe,Stockholm,欧洲,瑞典,斯德哥尔摩,????,228 ms,2a05:d016:1f6:6001:6b71:5d20:3793:adaf,IPv6,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365641
+34.245.199.100,443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,230 ms,34.245.199.100,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365602
+54.220.80.89,8443,TRUE,DUB,IE,Europe,Dublin,欧洲,爱尔兰,都柏林,????,230 ms,54.220.80.89,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777369190
+13.53.54.165,443,TRUE,ARN,SE,Europe,Stockholm,欧洲,瑞典,斯德哥尔摩,????,230 ms,13.53.54.165,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367567
+51.21.127.12,443,TRUE,ARN,SE,Europe,Stockholm,欧洲,瑞典,斯德哥尔摩,????,231 ms,51.21.127.12,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365654
+18.197.52.238,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,233 ms,18.197.52.238,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367224
+18.197.218.69,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,237 ms,18.197.218.69,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365655
+18.184.27.249,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,251 ms,18.184.55.249,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365621
+18.184.55.249,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,252 ms,18.184.55.249,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365642
+18.153.96.205,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,254 ms,18.153.96.205,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365658
+35.159.94.46,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,255 ms,35.159.94.46,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365603
+52.58.255.45,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,257 ms,52.58.255.45,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365626
+3.72.47.36,443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,257 ms,3.72.47.36,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365622
+3.29.240.49,443,TRUE,MXP,AE,Europe,Milan,欧洲,意大利,米兰,????,260 ms,3.29.240.49,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365615
+3.75.12.170,8443,TRUE,FRA,DE,Europe,Frankfurt-am-Main,欧洲,德国,法兰克福,????,262 ms,3.75.12.170,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368697
+15.223.200.13,27015,TRUE,EWR,CA,North America,Newark,北美洲,美国,纽瓦克,????,263 ms,15.223.200.13,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368088
+40.172.89.195,8443,TRUE,MXP,AE,Europe,Milan,欧洲,意大利,米兰,????,264 ms,40.172.89.195,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368184
+16.18.18.138,443,TRUE,ZRH,CH,Europe,Zurich,欧洲,瑞士,苏黎世,????,265 ms,16.18.18.138,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365644
+3.28.218.23,443,TRUE,MXP,AE,Europe,Milan,欧洲,意大利,米兰,????,265 ms,3.28.218.23,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365615
+18.102.110.23,9443,TRUE,MXP,IT,Europe,Milan,欧洲,意大利,米兰,????,271 ms,18.102.110.23,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777368952
+51.20.202.203,443,TRUE,ARN,SE,Europe,Stockholm,欧洲,瑞典,斯德哥尔摩,????,272 ms,51.20.202.203,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367587
+13.60.38.171,443,TRUE,ARN,SE,Europe,Stockholm,欧洲,瑞典,斯德哥尔摩,????,273 ms,13.60.38.171,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365634
+13.62.114.107,443,TRUE,ARN,SE,Europe,Stockholm,欧洲,瑞典,斯德哥尔摩,????,276 ms,13.62.114.107,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365656
+16.171.200.45,443,TRUE,ARN,SE,Europe,Stockholm,欧洲,瑞典,斯德哥尔摩,????,276 ms,16.171.200.45,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367177
+18.216.55.100,443,TRUE,CMH,US,North America,Columbus,北美洲,美国,哥伦布,????,289 ms,18.216.55.100,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365599
+3.15.213.158,443,TRUE,CMH,US,North America,Columbus,北美洲,美国,哥伦布,????,291 ms,3.15.213.158,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365583
+3.137.145.231,443,TRUE,CMH,US,North America,Columbus,北美洲,美国,哥伦布,????,293 ms,3.137.145.231,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777367566
+3.16.109.235,443,TRUE,CMH,US,North America,Columbus,北美洲,美国,哥伦布,????,294 ms,3.16.109.235,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365584
+18.222.50.18,443,TRUE,CMH,US,North America,Columbus,北美洲,美国,哥伦布,????,294 ms,18.222.50.18,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365629
+3.16.45.54,443,TRUE,CMH,US,North America,Columbus,北美洲,美国,哥伦布,????,295 ms,3.16.45.54,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365585
+3.139.5.104,443,TRUE,CMH,US,North America,Columbus,北美洲,美国,哥伦布,????,301 ms,3.139.5.104,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365588
+3.145.93.46,443,TRUE,CMH,US,North America,Columbus,北美洲,美国,哥伦布,????,309 ms,3.145.93.46,IPv4,https,TLSv1.3,plaintext,http/1.1,off,off,off,X25519,1777365588
