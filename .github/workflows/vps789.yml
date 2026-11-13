@@ -70,7 +70,6 @@ jobs:
             if smoke_test; then
               exit 0
             fi
-
             echo "Playwright 浏览器缓存校验失败，执行强制修复安装。" >&2
             python -m playwright install --force --with-deps --only-shell chromium
           else
@@ -88,7 +87,7 @@ jobs:
           path: ~/.cache/ms-playwright/chromium_headless_shell-*
           key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
 
-      - name: 抓取并生成六个端口文件
+      - name: 抓取并生成六个端口文件及 all.txt
         id: scrape
         working-directory: vps789
         run: |
@@ -104,14 +103,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      - name: 严格检查生成结果
+      - name: 严格检查六个端口文件及总汇总
         working-directory: vps789
+        shell: bash
         run: |
           set -euo pipefail
 
           files=(443.txt 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt)
           expected_ports=(443 8443 2053 2083 2087 2096)
           counts=()
+          total=0
 
           for i in "${!files[@]}"; do
             file="${files[$i]}"
@@ -122,6 +123,7 @@ jobs:
             echo "$file -> $count lines"
             test "$count" -ge 1
             counts+=("$count")
+            total=$((total + count))
 
             awk -v port="$port" '
               /^[[:space:]]*$/ { next }
@@ -135,8 +137,8 @@ jobs:
                 info = $0
                 sub(/^.*#/, "", info)
 
-                # 网页源：必须存在延迟ms、丢包率和下载速度。
-                # API 补充：允许下载速度为空，但仍必须有延迟ms和丢包率。
+                # 网页源：完整延迟、丢包率和下载速度。
+                # API 补充：允许下载速度为空，但延迟和丢包率必须存在。
                 if (info !~ /^[0-9]+(\.[0-9]+)?ms\/[0-9]+(\.[0-9]+)?-[0-9]+(\.[0-9]+)?(KB|MB|GB|TB)\/s$/ &&
                     info !~ /^[0-9]+(\.[0-9]+)?ms\/[0-9]+(\.[0-9]+)?-$/) {
                   print "非法 info: " $0
@@ -146,9 +148,18 @@ jobs:
             ' "$file"
           done
 
+          # 六个端口文件必须行数相同，且域名/测速字段顺序完全一致。
           for i in 1 2 3 4 5; do
             test "${counts[0]}" -eq "${counts[$i]}"
           done
+
+          # all.txt 必须严格等于六个端口文件按指定顺序的直接拼接。
+          test -s all.txt
+          cat "${files[@]}" > /tmp/vps789_all_expected.txt
+          cmp -s /tmp/vps789_all_expected.txt all.txt
+          all_count=$(grep -cve '^[[:space:]]*$' all.txt)
+          test "$all_count" -eq "$total"
+          echo "all.txt -> $all_count lines（六个端口文件原样汇总）"
 
           awk -F'#' '{sub(/:[0-9]+$/, "", $1); print $1}' 443.txt > /tmp/vps789_hosts_443.txt
           for file in 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt; do
@@ -160,7 +171,7 @@ jobs:
         run: |
           set -euo pipefail
           git status --short
-          unexpected=$(git status --short --untracked-files=all | grep -vE '^.. vps789/(443|8443|2053|2083|2087|2096)\.txt$' || true)
+          unexpected=$(git status --short --untracked-files=all | grep -vE '^.. vps789/(443|8443|2053|2083|2087|2096|all)\.txt$' || true)
           if [[ -n "$unexpected" ]]; then
             echo "发现非预期文件变化："
             printf '%s\n' "$unexpected"
@@ -181,10 +192,11 @@ jobs:
                   vps789/2053.txt \
                   vps789/2083.txt \
                   vps789/2087.txt \
-                  vps789/2096.txt
+                  vps789/2096.txt \
+                  vps789/all.txt
 
           if git diff --cached --quiet; then
-            echo "六个输出文件没有变化，跳过提交。"
+            echo "七个输出文件没有变化，跳过提交。"
             exit 0
           fi
 
