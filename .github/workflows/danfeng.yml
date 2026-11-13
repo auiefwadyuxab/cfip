@@ -1,0 +1,64 @@
+name: Danfeng CSV 自动汇总
+
+on:
+  push:
+    paths:
+      - 'danfeng/*.csv'
+      - 'danfeng/**/*.csv'
+      - 'danfeng/*.CSV'
+      - 'danfeng/**/*.CSV'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: danfeng-csv-aggregation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    name: 提取并汇总 IP:端口
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: 配置 Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: 提取、去重并生成日志
+        run: python danfeng/danfeng.py
+
+      - name: 检查输出文件
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f danfeng/danfeng.txt
+          test -f danfeng/danfeng.log
+          if grep -nE '[[:space:]]|^$' danfeng/danfeng.txt; then
+            echo 'danfeng.txt 存在空行或空白字符。' >&2
+            exit 1
+          fi
+          echo "✓ danfeng.txt：$(wc -l < danfeng/danfeng.txt) 条唯一 IP:端口"
+          echo "✓ danfeng.log：日志已生成"
+
+      - name: 提交汇总结果与日志
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- danfeng/danfeng.txt danfeng/danfeng.log
+          if git diff --cached --quiet; then
+            echo '✓ 汇总结果没有变化，无需提交。'
+            exit 0
+          fi
+          git commit -m 'chore: 更新 Danfeng IP 汇总与日志'
+          git push
