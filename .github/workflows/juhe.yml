@@ -1,0 +1,59 @@
+name: IP 去重汇总
+
+on:
+  # 手动或其他方式直接修改 sub/sub.txt 时触发。
+  push:
+    paths:
+      - 'sub/sub.txt'
+
+  # 订阅聚合使用 GITHUB_TOKEN 自动提交时，push 事件不会继续触发工作流；
+  # 因此在“订阅聚合”结束后接力运行本工作流。
+  workflow_run:
+    workflows:
+      - '订阅聚合'
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: juhe-aggregate-${{ github.event.repository.default_branch }}
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    # workflow_run 只接受成功结束的订阅聚合；sub.txt 的直接 push 正常运行。
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUNBUFFERED: '1'
+      TARGET_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref_name }}
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # workflow_run 时检出订阅聚合结束后的默认分支最新内容。
+          ref: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref }}
+
+      - name: 设置 Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: 运行去重汇总
+        run: python juhe.py
+
+      - name: 提交汇总结果和统计日志
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- juhe.txt juhe.log
+          if git diff --cached --quiet; then
+            echo '汇总结果和日志均无变化，无需提交。'
+          else
+            git commit -m 'chore: 更新 IP 去重汇总'
+            git push origin "HEAD:${TARGET_BRANCH}"
+          fi
