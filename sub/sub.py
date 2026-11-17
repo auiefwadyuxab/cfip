@@ -12,6 +12,7 @@ import re
 import sys
 import time
 import zlib
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -25,7 +26,7 @@ OUTPUT_FILE = BASE_DIR / "sub.txt"
 STATS_FILE = BASE_DIR / "sub_stats.txt"
 
 # 与历史 v2rayNG 抓包保持一致。
-USER_AGENT = "v2rayNG/2.2.6"
+USER_AGENT = "v2rayNG/2.4.0"
 REQUEST_HEADERS = {
     "User-Agent": USER_AGENT,
     "Connection": "close",
@@ -49,7 +50,7 @@ ENDPOINT_RE = re.compile(
     r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):([1-9][0-9]{0,4})$"
 )
 
-# 只统计用户指定的订阅器；其他来源完全不进入统计。
+# 固定订阅器名单始终保留；未知订阅器另按同面板重复标签动态识别。
 SOURCE_LABELS = (
     "CM",
     "Mia",
@@ -68,6 +69,23 @@ SOURCE_LABELS = (
 )
 SOURCE_LABEL_SET = set(SOURCE_LABELS)
 SOURCE_PATTERN = re.compile(r"\[(" + "|".join(re.escape(label) for label in SOURCE_LABELS) + r")\]")
+SOURCE_TAG_PATTERN = re.compile(r"\[([^\[\]]{1,48})\]")
+DYNAMIC_SOURCE_TAG_RE = re.compile(r"^[A-Za-z0-9_.\-\u4e00-\u9fff]{2,40}$")
+DYNAMIC_SOURCE_MIN_OCCURRENCES = 2
+
+# 这些内容通常是地区/线路标签，不应仅凭重复出现就认作订阅器名称。
+DYNAMIC_SOURCE_EXCLUDED_TAGS = {
+    "香港", "澳门", "台湾", "中国", "美国", "日本", "韩国", "新加坡", "英国", "德国",
+    "法国", "荷兰", "加拿大", "澳大利亚", "俄罗斯", "土耳其", "印度", "泰国", "马来西亚",
+    "印尼", "越南", "巴西", "阿根廷", "瑞士", "瑞典", "挪威", "芬兰", "丹麦", "波兰",
+    "意大利", "西班牙", "乌克兰", "以色列", "埃及", "南非", "墨西哥", "智利", "秘鲁",
+    "新西兰", "爱尔兰", "比利时", "奥地利", "捷克", "罗马尼亚", "保加利亚", "希腊", "葡萄牙",
+    "HK", "MO", "TW", "CN", "US", "JP", "KR", "SG", "UK", "GB", "DE", "FR", "NL",
+    "CA", "AU", "RU", "TR", "IN", "TH", "MY", "ID", "VN", "BR", "AR", "CH", "SE",
+    "NO", "FI", "DK", "PL", "IT", "ES", "UA", "IL", "EG", "ZA", "MX", "CL", "PE",
+    "NZ", "IE", "BE", "AT", "CZ", "RO", "BG", "GR", "PT", "USA", "HKG", "TWN", "JPN",
+    "KOR", "SGP", "GBR", "DEU", "FRA", "NLD", "CAN", "AUS", "RUS",
+}
 
 
 @dataclass
@@ -83,6 +101,7 @@ class SubscriptionStats:
     sources: dict[str, set[str]] = field(default_factory=dict)
     source_vless_lines: dict[str, int] = field(default_factory=dict)
     source_blocked: dict[str, int] = field(default_factory=dict)
+    dynamic_source_labels: set[str] = field(default_factory=set)
 
     @property
     def cross_subscription_duplicates(self) -> int:
@@ -96,15 +115,15 @@ class SubscriptionStats:
         return union
 
     def record_source_line(self, source: str) -> None:
-        if source in SOURCE_LABEL_SET:
+        if source:
             self.source_vless_lines[source] = self.source_vless_lines.get(source, 0) + 1
 
     def record_source_endpoint(self, source: str, endpoint: str) -> None:
-        if source in SOURCE_LABEL_SET:
+        if source:
             self.sources.setdefault(source, set()).add(endpoint)
 
     def record_source_blocked(self, source: str) -> None:
-        if source in SOURCE_LABEL_SET:
+        if source:
             self.source_blocked[source] = self.source_blocked.get(source, 0) + 1
 
 
@@ -184,14 +203,19 @@ def request_headers_for(url: str) -> dict[str, str]:
     return headers
 
 
-def fetch(url: str, session: requests.Session) -> str:
-    """完整获取单个订阅正文；失败才重试，成功后不重复请求。"""
+def fetch(
+    url: str,
+    session: requests.Session,
+    max_attempts: int | None = None,
+) -> str:
+    """完整获取单个订阅正文；默认使用全局重试次数，也可指定单次请求。"""
+    attempt_limit = MAX_ATTEMPTS if max_attempts is None else max(1, int(max_attempts))
     last_error: Exception | None = None
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    for attempt in range(1, attempt_limit + 1):
         retry_after: str | None = None
         try:
-            print(f"  获取 {attempt}/{MAX_ATTEMPTS}：{safe_url_label(url)}")
+            print(f"  获取 {attempt}/{attempt_limit}：{safe_url_label(url)}")
             current_url = url
 
             for redirect_index in range(MAX_REDIRECTS + 1):
@@ -242,7 +266,7 @@ def fetch(url: str, session: requests.Session) -> str:
                 f"    ! 失败：{type(exc).__name__}：{redact(str(exc))}",
                 file=sys.stderr,
             )
-            if attempt < MAX_ATTEMPTS:
+            if attempt < attempt_limit:
                 delay = retry_delay(attempt, retry_after)
                 print(f"    ↻ {delay:g} 秒后再次获取", file=sys.stderr)
                 time.sleep(delay)
@@ -365,8 +389,48 @@ def split_endpoint(endpoint: str) -> tuple[str, int]:
     return host, int(port)
 
 
-def source_from_line(line: str) -> str | None:
-    """从 VLESS 备注中识别用户指定的订阅器标签。"""
+def source_tags_from_line(line: str) -> list[str]:
+    """提取 VLESS 备注中的方括号标签。"""
+    try:
+        fragment = unquote(urlsplit(line.strip()).fragment)
+    except ValueError:
+        return []
+    return [match.group(1).strip() for match in SOURCE_TAG_PATTERN.finditer(fragment)]
+
+
+def is_dynamic_source_tag(tag: str) -> bool:
+    """限制自动识别标签的字符范围，降低地区标签和日志注入误判。"""
+    if tag in SOURCE_LABEL_SET or tag in DYNAMIC_SOURCE_EXCLUDED_TAGS:
+        return False
+    if not DYNAMIC_SOURCE_TAG_RE.fullmatch(tag):
+        return False
+    # 纯大写的 2～3 位缩写更可能是国家/地区代码。
+    if tag.isascii() and tag.isalpha() and tag.isupper() and len(tag) <= 3:
+        return False
+    return True
+
+
+def detect_dynamic_source_labels(text: str) -> set[str]:
+    """同一订阅面板中，至少出现在两条节点备注里的未知标签才作为新订阅器。"""
+    counts: Counter[str] = Counter()
+    for line in text.splitlines():
+        if not line.lstrip().lower().startswith(VLESS_PREFIX):
+            continue
+        # 一条节点备注只归属一个来源，和 source_from_line 的选择顺序保持一致。
+        if source_from_line(line) is not None:
+            continue
+        for tag in source_tags_from_line(line):
+            if is_dynamic_source_tag(tag):
+                counts[tag] += 1
+                break
+    return {
+        tag for tag, count in counts.items()
+        if count >= DYNAMIC_SOURCE_MIN_OCCURRENCES
+    }
+
+
+def source_from_line(line: str, dynamic_sources: set[str] | None = None) -> str | None:
+    """优先沿用固定订阅器识别；再识别本面板中重复至少两次的新标签。"""
     try:
         fragment = unquote(urlsplit(line.strip()).fragment)
     except ValueError:
@@ -375,7 +439,67 @@ def source_from_line(line: str) -> str | None:
     match = SOURCE_PATTERN.search(fragment)
     if match:
         return match.group(1)
+    if dynamic_sources:
+        for match in SOURCE_TAG_PATTERN.finditer(fragment):
+            label = match.group(1).strip()
+            if label in dynamic_sources:
+                return label
     return None
+
+
+def has_zhou_runfa_single_blocked_line(text: str) -> bool:
+    """精确匹配日志中的“周润发：1 条 · 0 个 · 过滤 1 条”触发条件。"""
+    zhou_lines = [
+        line for line in text.splitlines()
+        if line.lstrip().lower().startswith(VLESS_PREFIX)
+        and source_from_line(line) == "周润发"
+    ]
+    return (
+        len(zhou_lines) == 1
+        and extract_host_port(zhou_lines[0]) in BLOCKED_ENDPOINTS
+    )
+
+
+def merge_refetched_panel(first_text: str, second_text: str) -> tuple[str, int, bool]:
+    """合并二次抓取结果；保留首轮节点，仅在二次抓到有效周润发节点时替换该来源。"""
+    second_lines = second_text.splitlines()
+    second_zhou_valid = [
+        line for line in second_lines
+        if line.lstrip().lower().startswith(VLESS_PREFIX)
+        and source_from_line(line) == "周润发"
+        and (endpoint := extract_host_port(line)) is not None
+        and endpoint not in BLOCKED_ENDPOINTS
+    ]
+
+    first_lines = first_text.splitlines()
+    if second_zhou_valid:
+        # 只清理首轮中周润发的旧条目；其他订阅器首轮已抓到的内容全部保留。
+        first_lines = [
+            line for line in first_lines
+            if not (
+                line.lstrip().lower().startswith(VLESS_PREFIX)
+                and source_from_line(line) == "周润发"
+            )
+        ]
+
+    merged = list(first_lines)
+    seen_lines = set(merged)
+    appended = 0
+    for line in second_lines:
+        if not line or line in seen_lines:
+            continue
+        if line.lstrip().lower().startswith(VLESS_PREFIX):
+            source = source_from_line(line)
+            if source == "周润发":
+                # 只有二次抓到有效周润发节点时才替换首轮条目；否则完整沿用首轮。
+                if not second_zhou_valid or line not in second_zhou_valid:
+                    continue
+        merged.append(line)
+        seen_lines.add(line)
+        if line.lstrip().lower().startswith(VLESS_PREFIX):
+            appended += 1
+
+    return "\n".join(merged), appended, bool(second_zhou_valid)
 
 
 def process_texts(
@@ -386,6 +510,8 @@ def process_texts(
     total_vless = 0
 
     for text, stats in texts:
+        dynamic_sources = detect_dynamic_source_labels(text)
+        stats.dynamic_source_labels.update(dynamic_sources)
         local_seen: set[str] = set()
         for line in text.splitlines():
             if not line.lstrip().lower().startswith(VLESS_PREFIX):
@@ -393,7 +519,7 @@ def process_texts(
 
             stats.vless_lines += 1
             total_vless += 1
-            source = source_from_line(line)
+            source = source_from_line(line, dynamic_sources)
             if source is not None:
                 stats.record_source_line(source)
 
@@ -478,7 +604,7 @@ def _format_source_diagnostics(stats: SubscriptionStats) -> list[str]:
     missing = 0
     lines = [
         "  ┌─ 订阅器检测",
-        f"  │ 本面板命中 {len(SOURCE_LABELS)} 个指定订阅器标签",
+        f"  │ 本面板监测 {len(SOURCE_LABELS)} 个固定订阅器标签",
     ]
 
     for source in SOURCE_LABELS:
@@ -498,6 +624,26 @@ def _format_source_diagnostics(stats: SubscriptionStats) -> list[str]:
         else:
             detail = f"{raw_count} 条 · {unique_count} 个 · {note}"
         lines.append(f"  │ {icon} {source}：{detail}")
+
+    if stats.dynamic_source_labels:
+        lines.append("  │")
+        lines.append(
+            f"  │ 新发现订阅器（同一面板内标签重复 ≥{DYNAMIC_SOURCE_MIN_OCCURRENCES} 条）"
+        )
+        for source in sorted(stats.dynamic_source_labels, key=str.casefold):
+            raw_count = stats.source_vless_lines.get(source, 0)
+            unique_count = len(stats.sources.get(source, set()))
+            blocked = stats.source_blocked.get(source, 0)
+            icon, note = _source_status(raw_count, unique_count, blocked)
+            if icon == "✓":
+                normal += 1
+            else:
+                abnormal += 1
+            if blocked:
+                detail = f"{raw_count} 条 · {unique_count} 个 · {note} · 过滤 {blocked} 条"
+            else:
+                detail = f"{raw_count} 条 · {unique_count} 个 · {note}"
+            lines.append(f"  │ + {source}：{detail}")
 
     lines.extend(
         [
@@ -550,8 +696,8 @@ def write_stats(stats_list: list[SubscriptionStats], total_vless: int, total_nod
     if source_connections == 0:
         lines.extend(
             [
-                "订阅器诊断：本次没有发现指定订阅器标签。",
-                "其他来源不进入订阅器诊断。",
+                "订阅器诊断：本次没有发现固定来源或重复标签来源。",
+                f"自动识别条件：同一面板内同标签至少出现 {DYNAMIC_SOURCE_MIN_OCCURRENCES} 条。",
             ]
         )
     else:
@@ -609,6 +755,54 @@ def main() -> int:
     finally:
         session.close()
 
+    # 首轮所有订阅正文先完整留在内存中。只有精确命中周润发单条本机地址异常时，
+    # 才对产生该异常的订阅面板额外请求一次，避免二次请求其他上游造成限流。
+    first_round_cache = list(fetched)
+    retry_panel_index = next(
+        (
+            index for index, (text, _stats) in enumerate(first_round_cache)
+            if has_zhou_runfa_single_blocked_line(text)
+        ),
+        None,
+    )
+    if retry_panel_index is not None:
+        retry_index = retry_panel_index + 1
+        retry_url = urls[retry_panel_index]
+        print(
+            f"⚠ 检测到连接 {retry_index:02d} 的周润发仅返回 127.0.0.1:1234；"
+            "已缓存首轮全部订阅结果，现仅对该面板补抓一次。"
+        )
+        retry_session = build_session()
+        try:
+            try:
+                # 这是额外补抓轮次，只发起一次 HTTP 请求，避免补抓阶段触发三次重试。
+                retry_text = fetch(retry_url, retry_session, max_attempts=1)
+                original_text, original_stats = first_round_cache[retry_panel_index]
+                merged_text, appended_count, replaced_zhou = merge_refetched_panel(
+                    original_text, retry_text
+                )
+                fetched[retry_panel_index] = (merged_text, original_stats)
+                if replaced_zhou:
+                    print(
+                        f"✓ 二次抓取命中有效周润发节点，已替换该来源的首轮异常条目；"
+                        f"并合并新增 VLESS {appended_count} 条。"
+                    )
+                else:
+                    print(
+                        "⚠ 二次抓取没有获得有效的周润发节点；保留首轮完整结果，"
+                        f"仅合并不重复的新 VLESS {appended_count} 条。"
+                    )
+            except Exception as exc:
+                # 首轮结果已经完整缓存，补抓失败不应让已成功的其他订阅结果全部作废。
+                fetched = list(first_round_cache)
+                print(
+                    f"⚠ 周润发补抓失败，已回退到首轮缓存："
+                    f"{type(exc).__name__}：{redact(str(exc))}",
+                    file=sys.stderr,
+                )
+        finally:
+            retry_session.close()
+
     nodes, total_vless = process_texts(fetched)
     if sum(s.contributed_endpoints for s in stats_list) != len(nodes):
         fail("贡献数量与最终唯一节点数量不一致")
@@ -632,10 +826,13 @@ def main() -> int:
     print("✓ 过滤：127.0.0.1:1234")
     source_connection_count = sum(bool(s.source_vless_lines) for s in stats_list)
     if source_connection_count:
-        print(f"✓ 订阅器诊断：仅展开 {source_connection_count} 个实际命中指定来源的连接")
+        print(f"✓ 订阅器诊断：仅展开 {source_connection_count} 个实际命中来源的连接")
     else:
-        print("✓ 订阅器诊断：本次未发现指定来源标签")
-    print("✓ 其他来源：不进入订阅器诊断")
+        print("✓ 订阅器诊断：本次未发现固定来源或重复标签来源")
+    print(
+        f"✓ 新订阅器识别：同一面板内同标签至少出现 "
+        f"{DYNAMIC_SOURCE_MIN_OCCURRENCES} 条；未达阈值的不计入"
+    )
     print("═" * 56)
     return 0
 
