@@ -12,8 +12,9 @@ import re
 import sys
 import time
 import zlib
-from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import unquote, urljoin, urlsplit
@@ -50,11 +51,15 @@ ENDPOINT_RE = re.compile(
     r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):([1-9][0-9]{0,4})$"
 )
 
-# 固定订阅器名单始终保留；未知订阅器另按同面板重复标签动态识别。
-SOURCE_LABELS = (
+# 订阅器标签以 bestcf.txt 中的 sub://...#标签 为准。
+BESTCF_SUBSCRIPTIONS_URL = (
+    "https://raw.githubusercontent.com/auiefwadyuxab/cfip/main/bestcf/bestcf.txt"
+)
+DEFAULT_SOURCE_LABELS = (
     "CM",
     "Mia",
     "天诚1",
+    "天诚2",
     "Moist_R",
     "洛璃",
     "辣子鸡",
@@ -67,25 +72,12 @@ SOURCE_LABELS = (
     "周润发",
     "DanFeng",
 )
+SOURCE_LABELS = DEFAULT_SOURCE_LABELS
 SOURCE_LABEL_SET = set(SOURCE_LABELS)
-SOURCE_PATTERN = re.compile(r"\[(" + "|".join(re.escape(label) for label in SOURCE_LABELS) + r")\]")
-SOURCE_TAG_PATTERN = re.compile(r"\[([^\[\]]{1,48})\]")
-DYNAMIC_SOURCE_TAG_RE = re.compile(r"^[A-Za-z0-9_.\-\u4e00-\u9fff]{2,40}$")
-DYNAMIC_SOURCE_MIN_OCCURRENCES = 2
-
-# 这些内容通常是地区/线路标签，不应仅凭重复出现就认作订阅器名称。
-DYNAMIC_SOURCE_EXCLUDED_TAGS = {
-    "香港", "澳门", "台湾", "中国", "美国", "日本", "韩国", "新加坡", "英国", "德国",
-    "法国", "荷兰", "加拿大", "澳大利亚", "俄罗斯", "土耳其", "印度", "泰国", "马来西亚",
-    "印尼", "越南", "巴西", "阿根廷", "瑞士", "瑞典", "挪威", "芬兰", "丹麦", "波兰",
-    "意大利", "西班牙", "乌克兰", "以色列", "埃及", "南非", "墨西哥", "智利", "秘鲁",
-    "新西兰", "爱尔兰", "比利时", "奥地利", "捷克", "罗马尼亚", "保加利亚", "希腊", "葡萄牙",
-    "HK", "MO", "TW", "CN", "US", "JP", "KR", "SG", "UK", "GB", "DE", "FR", "NL",
-    "CA", "AU", "RU", "TR", "IN", "TH", "MY", "ID", "VN", "BR", "AR", "CH", "SE",
-    "NO", "FI", "DK", "PL", "IT", "ES", "UA", "IL", "EG", "ZA", "MX", "CL", "PE",
-    "NZ", "IE", "BE", "AT", "CZ", "RO", "BG", "GR", "PT", "USA", "HKG", "TWN", "JPN",
-    "KOR", "SGP", "GBR", "DEU", "FRA", "NLD", "CAN", "AUS", "RUS",
-}
+SOURCE_LABEL_REGISTRY_ORIGIN = "内置名单（回退）"
+DEFAULT_SOURCE_LABEL_SET = set(DEFAULT_SOURCE_LABELS)
+SOURCE_TAG_PATTERN = re.compile(r"\[([^\[\]]{1,96})\]")
+SUB_URI_PATTERN = re.compile(r"sub://[^\s\"'<>]+", re.IGNORECASE)
 
 
 @dataclass
@@ -101,7 +93,6 @@ class SubscriptionStats:
     sources: dict[str, set[str]] = field(default_factory=dict)
     source_vless_lines: dict[str, int] = field(default_factory=dict)
     source_blocked: dict[str, int] = field(default_factory=dict)
-    dynamic_source_labels: set[str] = field(default_factory=set)
 
     @property
     def cross_subscription_duplicates(self) -> int:
@@ -195,6 +186,67 @@ def build_session() -> requests.Session:
     return session
 
 
+def extract_source_labels_from_bestcf(content: str) -> tuple[str, ...]:
+    """逐行提取 bestcf.txt 中的 sub:// 连接，只读取 # 后标签，忽略其余内容。"""
+    labels: list[str] = []
+    seen: set[str] = set()
+    for raw_line in content.splitlines():
+        match = SUB_URI_PATTERN.search(raw_line)
+        if not match:
+            continue
+        # 允许未来每行在链接前后增加说明文字或 Markdown 包装。
+        entry = match.group(0).rstrip("),;]}`")
+        try:
+            parsed = urlsplit(entry)
+        except ValueError:
+            continue
+        if parsed.scheme.lower() != "sub" or not parsed.netloc:
+            continue
+        label = unquote(parsed.fragment).strip()
+        if not label or any(ord(char) < 32 or ord(char) == 127 for char in label):
+            continue
+        if label not in seen:
+            labels.append(label)
+            seen.add(label)
+    return tuple(labels)
+
+
+def load_source_labels(session: requests.Session) -> tuple[str, ...]:
+    """优先从仓库 bestcf.txt 获取标签；网络读取失败时回退到已知 15 个标签。"""
+    global SOURCE_LABEL_REGISTRY_ORIGIN
+    try:
+        with session.get(
+            BESTCF_SUBSCRIPTIONS_URL,
+            headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"},
+            timeout=(10, 20),
+            allow_redirects=True,
+        ) as response:
+            response.raise_for_status()
+            content = response.content.decode("utf-8-sig", errors="strict")
+        labels = extract_source_labels_from_bestcf(content)
+        if not labels:
+            raise ValueError("bestcf.txt 中没有找到有效的 sub://标签")
+        SOURCE_LABEL_REGISTRY_ORIGIN = "bestcf.txt"
+        print(f"订阅器名单：从 bestcf.txt 提取 {len(labels)} 个 sub:// 标签")
+        return labels
+    except (requests.RequestException, UnicodeError, ValueError, OSError) as exc:
+        SOURCE_LABEL_REGISTRY_ORIGIN = "内置名单（回退）"
+        print(
+            "⚠ 无法读取 bestcf.txt，回退到内置的 "
+            f"{len(DEFAULT_SOURCE_LABELS)} 个订阅器标签："
+            f"{type(exc).__name__}：{redact(str(exc))}",
+            file=sys.stderr,
+        )
+        return DEFAULT_SOURCE_LABELS
+
+
+def set_source_labels(labels: tuple[str, ...]) -> None:
+    """设置本轮运行唯一可信的订阅器标签集合。"""
+    global SOURCE_LABELS, SOURCE_LABEL_SET
+    SOURCE_LABELS = tuple(labels)
+    SOURCE_LABEL_SET = set(labels)
+
+
 def request_headers_for(url: str) -> dict[str, str]:
     headers = dict(REQUEST_HEADERS)
     host_header = host_header_for(url)
@@ -228,7 +280,6 @@ def fetch(
                     stream=False,
                 ) as response:
                     status = response.status_code
-                    retry_after = response.headers.get("Retry-After")
                     location = response.headers.get("Location")
 
                     if status in {301, 302, 303, 307, 308} and location:
@@ -242,6 +293,7 @@ def fetch(
                         continue
 
                     if status < 200 or status >= 300:
+                        retry_after = response.headers.get("Retry-After")
                         raise requests.HTTPError(f"HTTP {status}", response=response)
 
                     body = response.content  # stream=False：完整读取后才返回
@@ -276,14 +328,28 @@ def fetch(
 
 
 def retry_delay(attempt: int, retry_after: str | None) -> float:
-    """优先尊重短 Retry-After；否则使用稳定的递增退避。"""
+    """支持 Retry-After 秒数和 HTTP 日期；有效服务端值不再限制为 60 秒。"""
     if retry_after:
+        value = retry_after.strip()
         try:
-            value = float(retry_after)
-            if 0 <= value <= 60:
-                return value
-        except ValueError:
+            seconds = float(value)
+            if seconds >= 0 and seconds != float("inf"):
+                return seconds
+        except (ValueError, OverflowError):
             pass
+
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            seconds = (retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+            if seconds >= 0:
+                return seconds
+            # 时间点已过，立即允许下一次重试。
+            return 0.0
+        except (TypeError, ValueError, OverflowError):
+            pass
+
     return RETRY_DELAY * (RETRY_BACKOFF ** (attempt - 1))
 
 
@@ -291,7 +357,10 @@ def decode_subscription_body(body: bytes) -> str:
     """兼容明文 VLESS、Base64 VLESS，以及少数直接返回 gzip 字节的情况。"""
     payload = body
     if payload[:2] == b"\x1f\x8b":
-        payload = gzip.decompress(payload)
+        try:
+            payload = gzip.decompress(payload)
+        except (EOFError, OSError, zlib.error) as exc:
+            raise ValueError("gzip 响应解压失败或数据不完整") from exc
 
     text = payload.decode("utf-8-sig", errors="strict")
     if has_vless(text):
@@ -389,61 +458,17 @@ def split_endpoint(endpoint: str) -> tuple[str, int]:
     return host, int(port)
 
 
-def source_tags_from_line(line: str) -> list[str]:
-    """提取 VLESS 备注中的方括号标签。"""
-    try:
-        fragment = unquote(urlsplit(line.strip()).fragment)
-    except ValueError:
-        return []
-    return [match.group(1).strip() for match in SOURCE_TAG_PATTERN.finditer(fragment)]
-
-
-def is_dynamic_source_tag(tag: str) -> bool:
-    """限制自动识别标签的字符范围，降低地区标签和日志注入误判。"""
-    if tag in SOURCE_LABEL_SET or tag in DYNAMIC_SOURCE_EXCLUDED_TAGS:
-        return False
-    if not DYNAMIC_SOURCE_TAG_RE.fullmatch(tag):
-        return False
-    # 纯大写的 2～3 位缩写更可能是国家/地区代码。
-    if tag.isascii() and tag.isalpha() and tag.isupper() and len(tag) <= 3:
-        return False
-    return True
-
-
-def detect_dynamic_source_labels(text: str) -> set[str]:
-    """同一订阅面板中，至少出现在两条节点备注里的未知标签才作为新订阅器。"""
-    counts: Counter[str] = Counter()
-    for line in text.splitlines():
-        if not line.lstrip().lower().startswith(VLESS_PREFIX):
-            continue
-        # 一条节点备注只归属一个来源，和 source_from_line 的选择顺序保持一致。
-        if source_from_line(line) is not None:
-            continue
-        for tag in source_tags_from_line(line):
-            if is_dynamic_source_tag(tag):
-                counts[tag] += 1
-                break
-    return {
-        tag for tag, count in counts.items()
-        if count >= DYNAMIC_SOURCE_MIN_OCCURRENCES
-    }
-
-
-def source_from_line(line: str, dynamic_sources: set[str] | None = None) -> str | None:
-    """优先沿用固定订阅器识别；再识别本面板中重复至少两次的新标签。"""
+def source_from_line(line: str) -> str | None:
+    """仅匹配 bestcf.txt 的 sub:// 连接 # 后标签，不再猜测未知重复标签。"""
     try:
         fragment = unquote(urlsplit(line.strip()).fragment)
     except ValueError:
         return None
 
-    match = SOURCE_PATTERN.search(fragment)
-    if match:
-        return match.group(1)
-    if dynamic_sources:
-        for match in SOURCE_TAG_PATTERN.finditer(fragment):
-            label = match.group(1).strip()
-            if label in dynamic_sources:
-                return label
+    for match in SOURCE_TAG_PATTERN.finditer(fragment):
+        label = match.group(1).strip()
+        if label in SOURCE_LABEL_SET:
+            return label
     return None
 
 
@@ -510,8 +535,6 @@ def process_texts(
     total_vless = 0
 
     for text, stats in texts:
-        dynamic_sources = detect_dynamic_source_labels(text)
-        stats.dynamic_source_labels.update(dynamic_sources)
         local_seen: set[str] = set()
         for line in text.splitlines():
             if not line.lstrip().lower().startswith(VLESS_PREFIX):
@@ -519,7 +542,7 @@ def process_texts(
 
             stats.vless_lines += 1
             total_vless += 1
-            source = source_from_line(line, dynamic_sources)
+            source = source_from_line(line)
             if source is not None:
                 stats.record_source_line(source)
 
@@ -593,7 +616,7 @@ def _source_status(raw_count: int, unique_count: int, blocked: int) -> tuple[str
 
 
 def _format_source_diagnostics(stats: SubscriptionStats) -> list[str]:
-    """只有实际命中指定订阅器的连接才展开 14 个来源的诊断。"""
+    """按当前 sub:// 订阅名单展示来源；名单新增项单独标记，不猜测节点标签。"""
     if not stats.source_vless_lines:
         return []
 
@@ -602,12 +625,15 @@ def _format_source_diagnostics(stats: SubscriptionStats) -> list[str]:
     normal = 0
     abnormal = 0
     missing = 0
+    known_labels = [label for label in SOURCE_LABELS if label in DEFAULT_SOURCE_LABEL_SET]
+    added_labels = [label for label in SOURCE_LABELS if label not in DEFAULT_SOURCE_LABEL_SET]
     lines = [
         "  ┌─ 订阅器检测",
-        f"  │ 本面板监测 {len(SOURCE_LABELS)} 个固定订阅器标签",
+        f"  │ 本轮标签：{len(SOURCE_LABELS)} 个 sub://（来源：{SOURCE_LABEL_REGISTRY_ORIGIN}）",
     ]
 
-    for source in SOURCE_LABELS:
+    def append_label(source: str, prefix: str) -> None:
+        nonlocal normal, abnormal, missing
         raw_count = stats.source_vless_lines.get(source, 0)
         unique_count = len(stats.sources.get(source, set()))
         blocked = stats.source_blocked.get(source, 0)
@@ -623,34 +649,28 @@ def _format_source_diagnostics(stats: SubscriptionStats) -> list[str]:
             detail = f"{raw_count} 条 · {unique_count} 个 · {note} · 过滤 {blocked} 条"
         else:
             detail = f"{raw_count} 条 · {unique_count} 个 · {note}"
-        lines.append(f"  │ {icon} {source}：{detail}")
+        lines.append(f"  │ {prefix}{source}：{detail}")
 
-    if stats.dynamic_source_labels:
-        lines.append("  │")
-        lines.append(
-            f"  │ 新发现订阅器（同一面板内标签重复 ≥{DYNAMIC_SOURCE_MIN_OCCURRENCES} 条）"
+    for source in known_labels:
+        icon, _ = _source_status(
+            stats.source_vless_lines.get(source, 0),
+            len(stats.sources.get(source, set())),
+            stats.source_blocked.get(source, 0),
         )
-        for source in sorted(stats.dynamic_source_labels, key=str.casefold):
-            raw_count = stats.source_vless_lines.get(source, 0)
-            unique_count = len(stats.sources.get(source, set()))
-            blocked = stats.source_blocked.get(source, 0)
-            icon, note = _source_status(raw_count, unique_count, blocked)
-            if icon == "✓":
-                normal += 1
-            else:
-                abnormal += 1
-            if blocked:
-                detail = f"{raw_count} 条 · {unique_count} 个 · {note} · 过滤 {blocked} 条"
-            else:
-                detail = f"{raw_count} 条 · {unique_count} 个 · {note}"
-            lines.append(f"  │ + {source}：{detail}")
+        append_label(source, f"{icon} ")
+
+    if added_labels:
+        lines.append("  │")
+        lines.append("  │ 新发现订阅器（bestcf.txt 新增 sub:// 标签）")
+        for source in added_labels:
+            append_label(source, "+ ")
 
     lines.extend(
         [
             "  │",
             f"  │ 合计：{raw_total} 条 VLESS · {len(unique_union)} 个来源唯一 HOST:PORT",
             f"  │ 状态：正常 {normal} · 异常 {abnormal} · 未返回 {missing}",
-            "  └─ 以上仅用于订阅器诊断，不参与节点过滤或全局去重",
+            "  └─ 仅匹配订阅名单中的 sub:// 标签，不参与节点过滤或全局去重",
         ]
     )
     return lines
@@ -696,8 +716,7 @@ def write_stats(stats_list: list[SubscriptionStats], total_vless: int, total_nod
     if source_connections == 0:
         lines.extend(
             [
-                "订阅器诊断：本次没有发现固定来源或重复标签来源。",
-                f"自动识别条件：同一面板内同标签至少出现 {DYNAMIC_SOURCE_MIN_OCCURRENCES} 条。",
+                "订阅器诊断：本次没有匹配到当前订阅名单中的 sub:// 标签。",
             ]
         )
     else:
@@ -739,6 +758,7 @@ def main() -> int:
     stats_list: list[SubscriptionStats] = []
 
     try:
+        set_source_labels(load_source_labels(session))
         for index, url in enumerate(urls, 1):
             stats = SubscriptionStats(index=index)
             stats_list.append(stats)
@@ -828,11 +848,8 @@ def main() -> int:
     if source_connection_count:
         print(f"✓ 订阅器诊断：仅展开 {source_connection_count} 个实际命中来源的连接")
     else:
-        print("✓ 订阅器诊断：本次未发现固定来源或重复标签来源")
-    print(
-        f"✓ 新订阅器识别：同一面板内同标签至少出现 "
-        f"{DYNAMIC_SOURCE_MIN_OCCURRENCES} 条；未达阈值的不计入"
-    )
+        print("✓ 订阅器诊断：本次未匹配到 bestcf.txt 的 sub:// 标签")
+    print(f"✓ 订阅器名单：{SOURCE_LABEL_REGISTRY_ORIGIN}（{len(SOURCE_LABELS)} 个标签）")
     print("═" * 56)
     return 0
 
