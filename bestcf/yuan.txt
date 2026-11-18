@@ -3,5 +3,4 @@ https://countrymerge.pages.dev/all.txt
 https://bestcf.pages.dev/WARP/WARP-MASQUE-IPs-443.txt
 https://raw.githubusercontent.com/yanghanhanyingshi/cf-linglu/refs/heads/main/qilin_ip.txt
 https://raw.githubusercontent.com/yanghanhanyingshi/cf-linglu/refs/heads/main/linglu-01.txt
-https://countrymerge.pages.dev/all.txt
 https://raw.githubusercontent.com/LancelotRar/best-cf-ips/main/best-cf-ip-scanned-top400.txt
