@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "只预览，不修改面板"
+        description: "只预览，不修改面板或仓库文件"
         required: true
         type: boolean
         default: true
@@ -43,18 +43,24 @@ jobs:
       - name: Collect links and synchronize panels
         run: python bestcf/bestcf.py
 
-      - name: Commit changed output and current report
-        if: always() && steps.checkout.outcome == 'success'
+      # Preview mode and failed runs must not commit generated files.
+      - name: Commit changed output and count-only report
+        if: always() && steps.checkout.outcome == 'success' && env.BESTCF_DRY_RUN != 'true'
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- bestcf/
+          if [[ -f bestcf/bestcf.txt ]]; then
+            git add -- bestcf/bestcf.txt
+          fi
+          if [[ -f bestcf/bestcf.log ]]; then
+            git add -- bestcf/bestcf.log
+          fi
           if git diff --cached --quiet; then
             echo "输出和日志没有变化，不创建提交。"
             exit 0
           fi
-          git commit -m "chore(bestcf): update links and report"
+          git commit -m "chore(bestcf): update links and count report"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
