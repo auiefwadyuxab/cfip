@@ -41,11 +41,12 @@ jobs:
           python-version: "3.13"
 
       - name: Collect links and synchronize panels
+        id: collect
         run: python bestcf/bestcf.py
 
-      # Preview mode and failed runs must not commit generated files.
+      # Only commit after the collector finished successfully; preview never commits.
       - name: Commit changed output and count-only report
-        if: always() && steps.checkout.outcome == 'success' && env.BESTCF_DRY_RUN != 'true'
+        if: steps.collect.outcome == 'success' && env.BESTCF_DRY_RUN != 'true'
         shell: bash
         run: |
           set -euo pipefail

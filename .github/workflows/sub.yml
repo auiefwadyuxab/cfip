@@ -1,9 +1,12 @@
 name: 订阅聚合
 
 on:
-  schedule:
-    - cron: '17 */3 * * *'
-      timezone: 'Asia/Taipei'
+  # bestcf 完成且成功后，自动启动订阅聚合。
+  workflow_run:
+    workflows:
+      - 'bestcf'
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
@@ -16,13 +19,19 @@ concurrency:
 jobs:
   aggregate:
     name: 订阅聚合
+    # workflow_run 只在 bestcf 成功结束后执行；手动运行仍可直接执行。
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      TARGET_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref_name }}
 
     steps:
       - name: 检出仓库
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # workflow_run 时读取 bestcf 完成后默认分支上的最新 bestcf.txt。
+          ref: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref }}
           fetch-depth: 1
 
       - name: 配置 Python
@@ -69,4 +78,4 @@ jobs:
             exit 0
           fi
           git commit -m 'chore: 更新订阅聚合结果'
-          git push
+          git push origin "HEAD:${TARGET_BRANCH}"
