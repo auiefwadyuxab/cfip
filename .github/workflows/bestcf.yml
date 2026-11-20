@@ -1,9 +1,7 @@
 name: bestcf
 
 on:
-  schedule:
-    # UTC 14:17 = 北京时间 22:17。
-    - cron: "17 14 * * *"
+  # 定时运行由 Cloudflare Worker 负责；这里仅保留手动运行入口。
   workflow_dispatch:
     inputs:
       dry_run:
@@ -63,5 +61,45 @@ jobs:
             exit 0
           fi
           git commit -m "chore(bestcf): update links and count report"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+          # sub 与 vps789 会在 bestcf 完成后并行接力；手动工作流或其他提交
+          # 也可能恰好更新同一分支，因此同步远端并对短暂推送竞争做有限重试。
+          for attempt in 1 2 3; do
+            if ! git fetch origin "${GITHUB_REF_NAME}"; then
+              echo "获取远端分支失败，第 ${attempt}/3 次。" >&2
+            elif ! git rebase "origin/${GITHUB_REF_NAME}"; then
+              git rebase --abort || true
+              echo "同步远端时发生文件冲突，停止推送。" >&2
+              exit 1
+            elif git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            else
+              echo "推送失败，第 ${attempt}/3 次；准备重新同步远端。" >&2
+            fi
+
+            sleep "$((attempt * 2))"
+          done
+
+          echo "推送在 3 次尝试后仍失败。" >&2
+          exit 1
+
+      # This marker is deliberately created only after collection, panel writes,
+      # output commit, and push have all succeeded in a non-preview run.
+      - name: Prepare successful production-run marker
+        if: success() && env.BESTCF_DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'workflow=bestcf\nrun_id=%s\nrun_attempt=%s\nref=%s\ndry_run=false\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_REF_NAME" \
+            > "$RUNNER_TEMP/bestcf-production-success.txt"
+
+      - name: Publish successful production-run marker
+        if: success() && env.BESTCF_DRY_RUN != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          # 每次重跑都会有新的 run_attempt，防止旧标记被误用。
+          name: bestcf-production-success-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bestcf-production-success.txt
+          if-no-files-found: error
+          retention-days: 1

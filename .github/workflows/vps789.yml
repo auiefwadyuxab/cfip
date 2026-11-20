@@ -1,12 +1,17 @@
 name: vps789
 
 on:
+  # bestcf 正式运行成功后自动接力；预览和失败运行会被后置门禁跳过。
+  workflow_run:
+    workflows:
+      - 'bestcf'
+    types:
+      - completed
+  # 保留手动运行；自动运行只接收 bestcf 正式成功后的接力。
   workflow_dispatch:
-  schedule:
-    # 每 3 小时运行一次（GitHub Actions 使用 UTC）
-    - cron: "0 */3 * * *"
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -14,7 +19,62 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  production-gate:
+    name: 检查 bestcf 是否正式成功
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+    steps:
+      - name: 下载上游 bestcf 正式成功标记
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: bestcf-production-success-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/bestcf-trigger
+
+      - name: 判断是否允许启动
+        id: gate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          # 手动启动不受 bestcf 接力标记限制。
+          if [[ "$EVENT_NAME" != "workflow_run" ]]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "✓ 手动触发，按原有方式运行。"
+            exit 0
+          fi
+
+          marker="$RUNNER_TEMP/bestcf-trigger/bestcf-production-success.txt"
+          if [[ -s "$marker" ]] \
+            && [[ "$SOURCE_HEAD_BRANCH" == "$DEFAULT_BRANCH" ]] \
+            && grep -Fqx 'workflow=bestcf' "$marker" \
+            && grep -Fqx "run_id=${SOURCE_RUN_ID}" "$marker" \
+            && grep -Fqx "run_attempt=${SOURCE_RUN_ATTEMPT}" "$marker" \
+            && grep -Fqx "ref=${SOURCE_HEAD_BRANCH}" "$marker" \
+            && grep -Fqx 'dry_run=false' "$marker"; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "✓ 上游 bestcf 正式运行成功，允许启动。"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "上游 bestcf 没有对应的正式成功标记（可能是预览、失败或标记下载失败），跳过本次接力。"
+          fi
+
   update:
+    needs: production-gate
+    if: needs.production-gate.outputs.allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

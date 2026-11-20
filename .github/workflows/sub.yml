@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -17,10 +18,64 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  production-gate:
+    name: 检查 bestcf 是否正式成功
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+    steps:
+      - name: 下载上游 bestcf 正式成功标记
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: bestcf-production-success-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/bestcf-trigger
+
+      - name: 判断是否允许启动
+        id: gate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          # 手动启动不受 bestcf 接力标记限制。
+          if [[ "$EVENT_NAME" != "workflow_run" ]]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "✓ 手动触发，按原有方式运行。"
+            exit 0
+          fi
+
+          marker="$RUNNER_TEMP/bestcf-trigger/bestcf-production-success.txt"
+          if [[ -s "$marker" ]] \
+            && [[ "$SOURCE_HEAD_BRANCH" == "$DEFAULT_BRANCH" ]] \
+            && grep -Fqx 'workflow=bestcf' "$marker" \
+            && grep -Fqx "run_id=${SOURCE_RUN_ID}" "$marker" \
+            && grep -Fqx "run_attempt=${SOURCE_RUN_ATTEMPT}" "$marker" \
+            && grep -Fqx "ref=${SOURCE_HEAD_BRANCH}" "$marker" \
+            && grep -Fqx 'dry_run=false' "$marker"; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "✓ 上游 bestcf 正式运行成功，允许启动。"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "上游 bestcf 没有对应的正式成功标记（可能是预览、失败或标记下载失败），跳过本次接力。"
+          fi
+
   aggregate:
+    needs: production-gate
+    if: needs.production-gate.outputs.allowed == 'true'
     name: 订阅聚合
-    # workflow_run 只在 bestcf 成功结束后执行；手动运行仍可直接执行。
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # 只有正式成功标记通过门禁后才执行；手动运行仍可直接执行。
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -35,13 +90,17 @@ jobs:
           fetch-depth: 1
 
       - name: 配置 Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
           cache: pip
+          cache-dependency-path: sub/requirements.txt
 
       - name: 安装运行依赖
-        run: python -m pip install --disable-pip-version-check --no-input 'requests==2.34.2'
+        run: python -m pip install --disable-pip-version-check --no-input --requirement sub/requirements.txt
+
+      - name: 检查 Python 依赖一致性
+        run: python -m pip check
 
       - name: 运行订阅聚合
         env:
@@ -78,4 +137,22 @@ jobs:
             exit 0
           fi
           git commit -m 'chore: 更新订阅聚合结果'
-          git push origin "HEAD:${TARGET_BRANCH}"
+
+          # vps789 与本工作流会并行接力；两者可能同时向默认分支推送。
+          # 如果远端先出现了另一条工作流的提交，先变基再重试。
+          for attempt in 1 2 3; do
+            git fetch origin "${TARGET_BRANCH}"
+            if ! git rebase "origin/${TARGET_BRANCH}"; then
+              git rebase --abort || true
+              echo '同步远端提交时发生冲突，停止推送。' >&2
+              exit 1
+            fi
+            if git push origin "HEAD:${TARGET_BRANCH}"; then
+              exit 0
+            fi
+            echo "推送失败，第 ${attempt}/3 次；准备重新同步远端。" >&2
+            sleep "$((attempt * 2))"
+          done
+
+          echo '推送在 3 次尝试后仍失败。' >&2
+          exit 1
