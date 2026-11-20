@@ -1,0 +1,3 @@
+# Runtime dependencies for sub/sub.py
+# Keep exact pins so the setup-python pip cache key is reproducible.
+requests==2.34.2
