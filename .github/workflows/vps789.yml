@@ -27,8 +27,6 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       TARGET_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref_name }}
-      VPS789_DIAGNOSTICS_DIR: ${{ runner.temp }}/vps789-diagnostics
-      VPS789_ARTIFACT_DIR: ${{ runner.temp }}/vps789-artifact
 
     steps:
       - name: 检出仓库
@@ -42,6 +40,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          VPS789_DIAGNOSTICS_DIR="$RUNNER_TEMP/vps789-diagnostics"
+          VPS789_ARTIFACT_DIR="$RUNNER_TEMP/vps789-artifact"
+          {
+            echo "VPS789_DIAGNOSTICS_DIR=$VPS789_DIAGNOSTICS_DIR"
+            echo "VPS789_ARTIFACT_DIR=$VPS789_ARTIFACT_DIR"
+          } >> "$GITHUB_ENV"
           rm -f vps789/vps789.log
           rm -rf "$VPS789_DIAGNOSTICS_DIR" "$VPS789_ARTIFACT_DIR"
           mkdir -p "$VPS789_DIAGNOSTICS_DIR" "$VPS789_ARTIFACT_DIR"
