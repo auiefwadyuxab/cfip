@@ -347,6 +347,111 @@ def active_page_marker(page: Page) -> str:
     return ""
 
 
+def inspect_pagination_state(page: Page) -> tuple[bool, bool, str]:
+    """返回 (是否存在可识别分页控件, 是否确认还有后续页, 依据)。
+
+    只对 Element/ElementPlus 分页 DOM 作判断。若页面没有分页控件，或虽有
+    控件但无法从页码/总数确定还有后续页，就不把“未找到下一页按钮”误报为异常。
+    """
+    script = r"""() => {
+      const roots = Array.from(document.querySelectorAll('.el-pagination'))
+        .filter(root => root.getClientRects().length > 0);
+      if (!roots.length) {
+        return { present: false, hasMore: false, evidence: '未检测到可见的 .el-pagination 控件' };
+      }
+
+      const toNumber = value => {
+        const match = String(value || '').replace(/,/g, '').match(/\d+/);
+        return match ? Number(match[0]) : null;
+      };
+
+      for (const root of roots) {
+        const active = root.querySelector(
+          '.el-pager li.number.active, .el-pager li.is-active, .el-pager .active, '
+          + '.el-pager [aria-current="page"], .el-pager [aria-current="true"]'
+        );
+        const activeText = active
+          ? (active.innerText || active.textContent || active.getAttribute('aria-label') || '')
+          : '';
+        const jumpInput = root.querySelector('.el-pagination__jump input');
+        const currentPage = toNumber(activeText) || (jumpInput ? toNumber(jumpInput.value) : null);
+        const pageItems = Array.from(root.querySelectorAll(
+          '.el-pager li.number, .el-pager [data-page], .el-pager a, .el-pager button'
+        ));
+        const pageNumbers = pageItems
+          .map(item => toNumber(item.getAttribute('data-page') || item.innerText || item.textContent))
+          .filter(value => value !== null);
+        const laterPage = currentPage === null
+          ? undefined
+          : pageNumbers.find(value => value > currentPage);
+        if (laterPage !== undefined) {
+          return {
+            present: true,
+            hasMore: true,
+            evidence: `页码列表显示当前第 ${currentPage} 页之后还有第 ${laterPage} 页`
+          };
+        }
+
+        const totalElement = root.querySelector('.el-pagination__total');
+        const totalText = totalElement ? (totalElement.innerText || totalElement.textContent || '') : '';
+        const total = toNumber(totalText);
+        const sizeElement = root.querySelector('.el-pagination__sizes');
+        let pageSize = null;
+        if (sizeElement) {
+          const candidates = [
+            ...Array.from(sizeElement.querySelectorAll('input, select'))
+              .map(item => item.value || item.getAttribute('value') || ''),
+            sizeElement.innerText || sizeElement.textContent || ''
+          ];
+          for (const candidate of candidates) {
+            const sizeMatch = String(candidate).replace(/,/g, '').match(/(\d+)\s*(?:条\s*\/\s*页|条\/页|\/页)/);
+            const numericValue = sizeMatch ? Number(sizeMatch[1]) : toNumber(candidate);
+            if (numericValue && numericValue > 0) {
+              pageSize = numericValue;
+              break;
+            }
+          }
+        }
+        if (total !== null && pageSize && currentPage !== null && Math.ceil(total / pageSize) > currentPage) {
+          return {
+            present: true,
+            hasMore: true,
+            evidence: `总记录数 ${total}、每页 ${pageSize} 条，当前第 ${currentPage} 页`
+          };
+        }
+
+        const declaredPageCount = toNumber(
+          root.getAttribute('data-page-count') || root.getAttribute('page-count')
+        );
+        if (declaredPageCount && currentPage !== null && declaredPageCount > currentPage) {
+          return {
+            present: true,
+            hasMore: true,
+            evidence: `分页控件声明总页数 ${declaredPageCount}，当前第 ${currentPage} 页`
+          };
+        }
+      }
+      return { present: true, hasMore: false, evidence: '存在分页控件，但当前 DOM 未能可靠确认还有后续页' };
+    }"""
+    try:
+        state = page.evaluate(script)
+        if isinstance(state, dict):
+            return (
+                bool(state.get("present")),
+                bool(state.get("hasMore")),
+                clean_text(str(state.get("evidence") or "")),
+            )
+    except Exception as exc:
+        # If DOM inspection itself fails, remain conservative: do not infer a
+        # pagination failure from an inspection failure alone.
+        try:
+            present = page.locator(".el-pagination").count() > 0
+        except Exception:
+            present = False
+        return present, False, f"分页 DOM 检查失败：{type(exc).__name__}"
+    return False, False, "未取得分页状态"
+
+
 def wait_for_page_change(
     page: Page, rows: Locator, old_signature: str, old_page_marker: str, old_url: str = ""
 ) -> bool:
@@ -487,6 +592,16 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
                 ".el-pagination button.btn-next, .el-pagination .btn-next"
             ).first
         if next_button.count() == 0:
+            pagination_present, has_more_pages, evidence = inspect_pagination_state(page)
+            if pagination_present and has_more_pages:
+                note = (
+                    "已确认页面仍有后续页，但未识别到下一页按钮；"
+                    f"{evidence}。保留已抓取页面并停止后续翻页。"
+                )
+                print(f"[网页] {note}")
+                if page_reports:
+                    page_reports[-1]["pagination_note"] = note
+                save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-button-unrecognized")
             break
         try:
             class_text = (next_button.get_attribute("class") or "").casefold()
@@ -632,8 +747,7 @@ def fetch_top20_api() -> list[DomainRecord]:
             if not isinstance(good, list):
                 raise ValueError("data.good 不是数组")
 
-            records: list[DomainRecord] = []
-            seen: set[str] = set()
+            records_by_key: dict[str, DomainRecord] = {}
             invalid_items = 0
             duplicate_items = 0
             for item in good:
@@ -651,14 +765,20 @@ def fetch_top20_api() -> list[DomainRecord]:
                     info=format_info(latency=latency, loss=loss, speed=""),
                     source="api",
                 )
-                if record.key in seen:
+                existing = records_by_key.get(record.key)
+                if existing is not None:
                     duplicate_items += 1
+                    records_by_key[record.key] = DomainRecord(
+                        host=existing.host,
+                        info=merge_record_info(existing.info, record.info),
+                        source="api",
+                    )
                     continue
-                seen.add(record.key)
-                records.append(record)
+                records_by_key[record.key] = record
 
+            records = list(records_by_key.values())
             print(
-                f"[API] 原始 {len(good)} 条；有效域名 {len(records)} 个；"
+                f"[API] 原始 {len(good)} 条；有效唯一域名 {len(records)} 个；"
                 f"接口内重复 {duplicate_items} 条；无效项 {invalid_items} 条；"
                 f"耗时 {time.monotonic() - attempt_started:.1f} 秒。"
             )
@@ -942,18 +1062,20 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
     print(f"│ 合并后唯一域名：{len(merged):,} 个")
 
     print("┌─ 4. 写入六个端口文件")
+    output_started = time.monotonic()
     write_outputs(merged.values(), output_dir)
+    output_elapsed = time.monotonic() - output_started
     for port in PORTS:
         path = output_dir / f"{port}.txt"
         print(f"│ {path.name:<10} {len(merged):>8,} 个域名｜{path.stat().st_size:,} bytes")
     all_path = output_dir / "all.txt"
     print(f"│ {'all.txt':<10} {len(merged) * len(PORTS):>8,} 条记录｜{all_path.stat().st_size:,} bytes")
     elapsed = time.monotonic() - started
-    print("\n" + rule)
-    print(f"✓ 抓取完成｜唯一域名 {len(merged):,} 个｜总耗时 {elapsed:.1f} 秒")
     print(f"分项耗时：网页 {web_elapsed:.1f}s｜API {api_elapsed:.1f}s｜文件写入 {output_elapsed:.1f}s")
     if pagination_notes:
         print("注意：本次网页分页未完整到达末页，端口文件按已抓取页面与 API 结果生成。")
+    print("\n" + rule)
+    print(f"✓ 抓取完成｜唯一域名 {len(merged):,} 个｜总耗时 {elapsed:.1f} 秒")
     print(rule)
     return 0
 
@@ -1011,3 +1133,11 @@ def main() -> int:
     return code
 
 
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
