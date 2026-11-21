@@ -25,6 +25,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Literal
 
@@ -33,6 +34,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator, Page, sync_playwright
 
 PAGE_URL = "https://vps789.com/cfip/?remarks=domain"
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 TOP20_API_URL = "https://vps789.com/openApi/cfIpTop20"
 PORTS = (443, 8443, 2053, 2083, 2087, 2096)
 NAVIGATION_TIMEOUT_MS = 60_000
@@ -385,6 +387,7 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
     page_no = 0
 
     while True:
+        page_started = time.monotonic()
         page_no += 1
         rows = find_data_rows(page)
         row_count = rows.count()
@@ -462,6 +465,7 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
             "missing_loss": missing_loss,
             "missing_speed": missing_speed,
             "row_read_failures": row_read_failures,
+            "elapsed_seconds": time.monotonic() - page_started,
             "skip_examples": skipped_examples,
         }
         page_reports.append(page_report)
@@ -470,7 +474,8 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
             f"本页唯一 {len(page_records)}；本页重复 {page_duplicates}；"
             f"与前页重复 {page_cross_duplicates}；无法识别域名 {page_report['skipped_rows']} 行；"
             f"缺延迟 {missing_latency}、缺丢包率 {missing_loss}、缺速度 {missing_speed}；"
-            f"DOM 读取失败 {row_read_failures}；累计全局唯一域名 {len(all_records)}。"
+            f"DOM 读取失败 {row_read_failures}；累计全局唯一域名 {len(all_records)}；"
+            f"本页耗时 {page_report['elapsed_seconds']:.1f} 秒。"
         )
         if skipped_examples:
             print("[网页] 跳过行示例：" + " || ".join(skipped_examples))
@@ -604,6 +609,7 @@ def fetch_top20_api() -> list[DomainRecord]:
     }
     last_error: Exception | None = None
     for attempt in range(1, API_RETRY_COUNT + 1):
+        attempt_started = time.monotonic()
         try:
             with httpx.Client(
                 timeout=httpx.Timeout(20.0, connect=10.0),
@@ -653,12 +659,16 @@ def fetch_top20_api() -> list[DomainRecord]:
 
             print(
                 f"[API] 原始 {len(good)} 条；有效域名 {len(records)} 个；"
-                f"接口内重复 {duplicate_items} 条；无效项 {invalid_items} 条。"
+                f"接口内重复 {duplicate_items} 条；无效项 {invalid_items} 条；"
+                f"耗时 {time.monotonic() - attempt_started:.1f} 秒。"
             )
             return records
         except (httpx.HTTPError, ValueError) as exc:
             last_error = exc
-            print(f"[API] 请求失败（尝试 {attempt}/{API_RETRY_COUNT}）：{exc}")
+            print(
+                f"[API] 请求失败（尝试 {attempt}/{API_RETRY_COUNT}）：{exc}；"
+                f"耗时 {time.monotonic() - attempt_started:.1f} 秒。"
+            )
             if attempt < API_RETRY_COUNT:
                 time.sleep(min(2 ** (attempt - 1), 4))
     print(f"[API] {API_RETRY_COUNT} 次请求均失败，跳过 API 补充：{last_error}")
@@ -851,7 +861,7 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
     print(rule)
     print("VPS789 · 域名抓取运行报告")
     print(rule)
-    print(f"运行时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"运行时间：{datetime.now(TAIPEI_TZ).strftime('%Y-%m-%d %H:%M:%S 台北时间')}")
     print(f"目标页面：{display_host(args.url) or args.url}")
     print(f"输出端口：{', '.join(map(str, PORTS))}")
     print("抓取规则：网页分页 + Top20 API；以域名为唯一键。")
@@ -859,7 +869,9 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
     print("输出规则：每个端口文件每个域名一条；all.txt 按六端口顺序直接拼接。")
     print("")
 
+    web_started = time.monotonic()
     web_records, page_reports, retry_notes = scrape_vps789_page(args.url, diagnostics_dir)
+    web_elapsed = time.monotonic() - web_started
     total_rows = sum(int(item.get("raw_rows", 0)) for item in page_reports)
     skipped_rows = sum(int(item.get("skipped_rows", 0)) for item in page_reports)
     unique_web = len(web_records)
@@ -869,14 +881,15 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
     )
 
     print("\n┌─ 1. 网页分页结果")
-    print("│ 页码｜原始行｜识别域名｜本页唯一｜本页重复｜跨页重复｜跳过行")
+    print("│ 页码｜原始行｜识别域名｜本页唯一｜本页重复｜跨页重复｜跳过行｜耗时")
     for item in page_reports:
         print(
             f"│ {int(item['page']):>3}｜{int(item['raw_rows']):>6,}｜"
             f"{int(item['valid_domains']):>8,}｜{int(item.get('unique_domains', 0)):>8,}｜"
             f"{int(item.get('duplicate_rows', 0)):>8,}｜"
             f"{int(item.get('cross_page_duplicates', 0)):>8,}｜"
-            f"{int(item['skipped_rows']):>6,}"
+            f"{int(item['skipped_rows']):>6,}｜"
+            f"{float(item.get('elapsed_seconds', 0.0)):>5.1f}s"
         )
         missing_latency = int(item.get("missing_latency", 0))
         missing_loss = int(item.get("missing_loss", 0))
@@ -907,7 +920,7 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
     print(
         f"网页小计：读取 {total_rows:,} 行｜识别域名 {sum(int(item.get('valid_domains', 0)) for item in page_reports):,} 条｜"
         f"网页唯一 {unique_web:,} 个｜重复 {web_duplicates:,} 条｜"
-        f"跳过 {skipped_rows:,} 行"
+        f"跳过 {skipped_rows:,} 行｜网页耗时 {web_elapsed:.1f} 秒"
     )
     if pagination_notes:
         print(f"网页状态：部分分页，已保留 {len(page_reports)} 页有效结果。")
@@ -916,8 +929,10 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
         print(f"网页状态：正常完成，共处理 {len(page_reports)} 页。")
 
     print("\n┌─ 2. Top20 API 补充")
+    api_started = time.monotonic()
     api_records = fetch_top20_api()
-    print(f"│ API 可用域名：{len(api_records):,} 个")
+    api_elapsed = time.monotonic() - api_started
+    print(f"│ API 可用域名：{len(api_records):,} 个｜总耗时 {api_elapsed:.1f} 秒")
 
     print("┌─ 3. 网页与 API 合并")
     merged = merge_sources(web_records, api_records, web_duplicates=web_duplicates)
@@ -936,6 +951,7 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
     elapsed = time.monotonic() - started
     print("\n" + rule)
     print(f"✓ 抓取完成｜唯一域名 {len(merged):,} 个｜总耗时 {elapsed:.1f} 秒")
+    print(f"分项耗时：网页 {web_elapsed:.1f}s｜API {api_elapsed:.1f}s｜文件写入 {output_elapsed:.1f}s")
     if pagination_notes:
         print("注意：本次网页分页未完整到达末页，端口文件按已抓取页面与 API 结果生成。")
     print(rule)
@@ -968,7 +984,7 @@ def main() -> int:
             "╔════════════════════════════════════════════════════════════════════╗\n"
             "║                    VPS789 · 本次运行日志                           ║\n"
             "╚════════════════════════════════════════════════════════════════════╝\n"
-            f"开始时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+            f"开始时间：{datetime.now(TAIPEI_TZ).strftime('%Y-%m-%d %H:%M:%S 台北时间')}\n"
             "本文件每次运行覆盖；仅记录当前这次抓取。\n\n"
         )
         stdout_tee = Tee(sys.stdout, log_stream)
@@ -987,7 +1003,7 @@ def main() -> int:
                 print(f"\n运行状态：成功｜总耗时 {elapsed:.1f} 秒")
             else:
                 print(f"\n运行状态：失败｜总耗时 {elapsed:.1f} 秒")
-            print(f"日志文件：{log_file}")
+            print("日志文件：vps789.log（本次运行已覆盖）")
             log_stream.flush()
             os.fsync(log_stream.fileno())
 
