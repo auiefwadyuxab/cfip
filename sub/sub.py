@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from urllib.parse import unquote, urljoin, urlsplit
 
 import requests
@@ -27,6 +28,7 @@ from requests.adapters import HTTPAdapter
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_FILE = BASE_DIR / "sub.txt"
 STATS_FILE = BASE_DIR / "sub_stats.txt"
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 USER_AGENT = "v2rayNG/2.4.0"
 REQUEST_HEADERS = {
@@ -101,13 +103,6 @@ def get_subscription_urls() -> list[str]:
         except ValueError as exc:
             fail(f"第 {index} 个订阅链接格式错误：{redact(str(exc))}")
     return urls
-
-
-def safe_url_label(url: str) -> str:
-    try:
-        return urlsplit(url).hostname or "未知主机"
-    except ValueError:
-        return "未知主机"
 
 
 def host_header_for(url: str) -> str | None:
@@ -682,8 +677,39 @@ def write_results(nodes, stats_content: str) -> None:
                 ) from write_error
             raise
 
-def redact(value: str) -> str:
-    return re.sub(r"https?://[^\s'\"]+", "<已隐藏URL>", value)
+def redact(value: str, sensitive_urls: list[str] | tuple[str, ...] = ()) -> str:
+    """Hide subscription addresses, hostnames and request paths in all log output."""
+    text = str(value)
+    text = re.sub(r"https?://[^\s'\"<>]+", "<订阅地址已隐藏>", text, flags=re.IGNORECASE)
+    # requests commonly formats failures as "with url: /path?..." and
+    # HTTPSConnectionPool(host='...'). The first form has no scheme, so hide
+    # the complete request target (including any server/token query) as well.
+    text = re.sub(
+        r"(?i)((?:with\s+)?url\s*:\s*)[^\s'\"<>]+",
+        r"\1<请求路径已隐藏>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)([?&](?:token|key|auth|authorization|password|passwd|secret|access_token|api_key)=)[^&\s'\"<>]+",
+        r"\1<已隐藏>",
+        text,
+    )
+    candidates: set[str] = set()
+    for address in sensitive_urls:
+        try:
+            parsed = urlsplit(address)
+        except ValueError:
+            continue
+        for candidate in (parsed.geturl(), parsed.netloc, parsed.hostname, parsed.path, parsed.query):
+            if candidate and len(candidate) > 1:
+                candidates.add(candidate)
+    for candidate in sorted(candidates, key=len, reverse=True):
+        text = re.sub(re.escape(candidate), "<已隐藏>", text, flags=re.IGNORECASE)
+    return text
+
+
+def local_time_text() -> str:
+    return datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M:%S 台北时间")
 
 
 def render_stats(
@@ -697,52 +723,52 @@ def render_stats(
     final_count: int,
     elapsed_seconds: float = 0.0,
 ) -> str:
-    """Build a human-readable report: overview first, details second."""
+    """Build a compact, readable report without exposing any subscription address."""
     rule = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    recovered = sum(
-        bool(panel_caches[2]["sources"].get(label)) for label in SOURCE_LABELS
-    )
+    recovered = sum(bool(panel_caches[2]["sources"].get(label)) for label in SOURCE_LABELS)
     pending = round_history[-1]["pending"] if round_history else list(SOURCE_LABELS)
+    total_request_seconds = sum(item.elapsed_seconds for item in panel_stats)
+    total_wait_seconds = sum(float(item.get("wait_seconds", 0.0)) for item in round_history)
+
     if not pending:
-        finish_reason = "已知订阅器全部取得有效缓存，提前结束"
+        finish_reason = "所有已知订阅器均已取得有效缓存，提前结束"
     elif len(round_history) >= MAX_ROUNDS:
-        finish_reason = f"达到 {MAX_ROUNDS} 轮上限，保留本次已取得的全部有效缓存"
+        finish_reason = f"达到 {MAX_ROUNDS} 轮上限；保留本次取得的全部有效缓存"
     else:
         finish_reason = "运行结束"
 
     lines = [
         rule,
-        "SUB 订阅聚合 · 本次运行报告",
+        "SUB · 四面板订阅聚合运行报告",
         rule,
-        f"运行时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
-        f"运行耗时：{elapsed_seconds:.1f} 秒",
-        f"运行轮次：{len(round_history)}/{MAX_ROUNDS} 轮",
-        f"订阅器恢复：{recovered}/{len(SOURCE_LABELS)} 个已知订阅器",
+        f"运行时间：{local_time_text()}",
+        f"总耗时：{elapsed_seconds:.1f} 秒（{elapsed_seconds / 60:.1f} 分钟）",
+        f"面板请求耗时：{total_request_seconds:.1f} 秒｜轮间等待：{total_wait_seconds:.1f} 秒",
+        f"运行轮次：{len(round_history)}/{MAX_ROUNDS}｜订阅器恢复：{recovered}/{len(SOURCE_LABELS)}",
         f"最终结果：{final_count:,} 个唯一 HOST:PORT",
         f"结束原因：{finish_reason}",
         "",
-        "【一、四个输入面板】",
-        "每轮均按 1 → 2 → 3 → 4 请求；仅第 3 个面板的已知订阅器恢复情况决定是否提前结束。",
-        "缓存只在本次运行内累积，不跨 Actions 运行复用。",
+        "【一、面板总览】",
+        "面板｜类型｜请求｜失败｜缓存唯一｜累计请求耗时",
     ]
-    for item, url in zip(panel_stats, urls):
-        role = "订阅面板（按订阅器分类）" if item.index == 3 else "独立面板（链接内去重）"
+    for item in panel_stats:
+        role = "订阅面板" if item.index == 3 else "独立面板"
         unique_count = cache_size(panel_caches[item.index - 1])
         lines.append(
-            f"  面板 {item.index}｜{role}｜{safe_url_label(url)}｜"
-            f"请求 {item.requested_rounds} 次｜失败 {item.failed_rounds} 次｜"
-            f"缓存 {unique_count:,} 条｜耗时 {item.elapsed_seconds:.1f} 秒"
+            f"{item.index:>2}｜{role}｜{item.requested_rounds:>2} 次｜"
+            f"{item.failed_rounds:>2} 次｜{unique_count:>8,}｜{item.elapsed_seconds:>7.1f} 秒"
         )
 
-    lines.extend(["", "【二、逐轮请求明细】"])
+    lines.extend(["", "【二、逐轮请求】"])
     for round_item in round_history:
-        lines.append(f"● 第 {round_item['round']}/{MAX_ROUNDS} 轮")
+        recovered_this_round = len(SOURCE_LABELS) - len(round_item["pending"])
+        lines.append(f"第 {round_item['round']}/{MAX_ROUNDS} 轮｜第 3 面板订阅器恢复 {recovered_this_round}/{len(SOURCE_LABELS)}")
         for index, result in enumerate(round_item["links"], 1):
-            elapsed = float(result.get("elapsed", 0.0))
+            elapsed = float(result.get("elapsed", result.get("metric", {}).get("elapsed", 0.0)))
             if not result["ok"]:
                 lines.append(
                     f"  面板 {index}｜失败｜耗时 {elapsed:.1f} 秒｜"
-                    f"{result['error']}｜之前缓存保留"
+                    f"{result['error']}｜已缓存节点保留"
                 )
                 continue
             metric = result["metric"]
@@ -751,37 +777,24 @@ def render_stats(
                 f"本轮唯一 {metric['round_unique']:,}｜新增 {metric['added']:,}｜"
                 f"重复 {metric['response_duplicates'] + metric['cached_duplicates']:,}｜"
                 f"无效 {metric['invalid']:,}｜过滤本机 {metric['blocked']:,}｜"
-                f"累计 {metric['cumulative']:,}｜耗时 {elapsed:.1f} 秒"
+                f"累计 {metric['cumulative']:,}｜{elapsed:.1f} 秒"
             )
-            if index == 3:
-                lines.append("    订阅器｜本轮原始｜本轮唯一｜新增缓存｜累计缓存")
-                for label in SOURCE_LABELS:
-                    provider = result["sources"].get(label, {})
-                    cached = len(panel_caches[2]["sources"].get(label, {}))
-                    lines.append(
-                        f"    {label}｜{provider.get('raw', 0):>6}｜"
-                        f"{provider.get('round_unique', 0):>6}｜"
-                        f"{provider.get('added', 0):>6}｜{cached:>6}"
-                    )
-                unknown = result.get("unlabelled", {})
-                if unknown.get("raw", 0):
-                    lines.append(
-                        f"    未识别标签｜原始 {unknown['raw']}｜"
-                        f"本轮唯一 {unknown['round_unique']}｜新增 {unknown['added']}"
-                    )
         missing = round_item["pending"]
-        lines.append("  尚未恢复：" + ("、".join(missing) if missing else "无，全部已恢复"))
+        lines.append("  尚未恢复：" + ("、".join(missing) if missing else "全部恢复"))
+        wait_seconds = float(round_item.get("wait_seconds", 0.0))
+        if wait_seconds > 0:
+            lines.append(f"  下一轮等待：{wait_seconds:g} 秒")
         lines.append("")
 
     lines.extend([rule, "【三、第 3 面板订阅器累计情况】"])
+    lines.append("状态｜订阅器｜缓存唯一｜累计有效｜无效｜过滤本机")
     for label in SOURCE_LABELS:
         cached = len(panel_caches[2]["sources"].get(label, {}))
-        metric = source_totals[label]
-        status = "✓ 已恢复" if cached >= MIN_SOURCE_ENDPOINTS else "○ 暂无有效缓存"
+        metric = source_totals.get(label, {})
+        status = "✓ 已恢复" if cached >= MIN_SOURCE_ENDPOINTS else "○ 待恢复"
         lines.append(
-            f"  {status}｜{label}｜缓存唯一 {cached:,}｜"
-            f"累计有效 {metric['valid']:,}｜无效 {metric['invalid']:,}｜"
-            f"过滤本机 {metric['blocked']:,}"
+            f"{status}｜{label}｜{cached:>6,}｜{metric.get('valid', 0):>6,}｜"
+            f"{metric.get('invalid', 0):>4,}｜{metric.get('blocked', 0):>4,}"
         )
 
     tagged_cache = panel_caches[2]
@@ -789,10 +802,10 @@ def render_stats(
     unlabelled_cache_rows = len(tagged_cache["unlabelled"])
     link3_unique = len(build_tagged_link_nodes(tagged_cache))
     lines.extend([
-        f"  分类缓存：{provider_cache_rows + unlabelled_cache_rows:,} 条",
-        f"  第 3 面板合并去重：{link3_unique:,} 个",
-        f"  跨订阅器/未标注重复：{provider_cache_rows + unlabelled_cache_rows - link3_unique:,} 个",
-        f"  未识别标签：原始 {unlabelled_totals['raw']:,}｜有效 {unlabelled_totals['valid']:,}｜"
+        f"分类缓存：{provider_cache_rows + unlabelled_cache_rows:,} 条",
+        f"第 3 面板合并去重：{link3_unique:,} 个",
+        f"跨订阅器/未标注重复：{provider_cache_rows + unlabelled_cache_rows - link3_unique:,} 个",
+        f"未识别标签：原始 {unlabelled_totals['raw']:,}｜有效 {unlabelled_totals['valid']:,}｜"
         f"无效 {unlabelled_totals['invalid']:,}｜过滤本机 {unlabelled_totals['blocked']:,}｜"
         f"缓存唯一 {unlabelled_cache_rows:,}",
         "",
@@ -800,9 +813,8 @@ def render_stats(
         "【四、四面板最终合并】",
     ])
     for summary in panel_merge:
-        stats = panel_stats[summary["index"] - 1]
         lines.append(
-            f"  面板 {summary['index']}｜本链接唯一 {summary['panel_unique']:,}｜"
+            f"面板 {summary['index']}｜链接唯一 {summary['panel_unique']:,}｜"
             f"新增到总表 {summary['new_global']:,}｜与前面面板重复 {summary['overlap']:,}"
         )
     lines.extend([
@@ -812,7 +824,7 @@ def render_stats(
         f"最终唯一 HOST:PORT：{final_count:,}",
         "输出文件：sub.txt",
         "统计文件：sub_stats.txt",
-        "去重顺序：第 1 → 第 2 → 第 3 → 第 4 面板；不设置来源质量优先级。",
+        "说明：订阅地址及主机名不写入此报告。",
         rule,
     ])
     return "\n".join(lines).rstrip() + "\n"
@@ -832,7 +844,7 @@ def main() -> int:
         try:
             write_stats_only(
                 "订阅聚合运行报告\n"
-                f"运行时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                f"运行时间：{local_time_text()}\n"
                 "运行结果：未能读取四个面板链接配置。\n"
                 "请检查 GitHub Secret sub 是否仍按 bestcf 的顺序提供四行 URL。\n"
             )
@@ -855,8 +867,10 @@ def main() -> int:
         panel_caches = [make_panel_cache(index) for index in range(1, 5)]
 
         print(f"订阅器名单：{len(SOURCE_LABELS)} 个（来源：{SOURCE_LABEL_REGISTRY_ORIGIN}）")
-        for index, url in enumerate(urls, 1):
-            print(f"  连接 {index}：{safe_url_label(url)}" + ("（sub 订阅面板）" if index == 3 else ""))
+        print("四个订阅地址已隐藏；本次按面板 1 → 2 → 3 → 4 的顺序请求。")
+        for index in range(1, 5):
+            role = "订阅面板（按订阅器分类）" if index == 3 else "独立面板（单独去重）"
+            print(f"  面板 {index}：{role}｜地址已隐藏")
 
         for round_number in range(1, MAX_ROUNDS + 1):
             print(f"\n========== 第 {round_number}/{MAX_ROUNDS} 轮 ==========")
@@ -865,7 +879,7 @@ def main() -> int:
             for index, (url, stats, cache) in enumerate(zip(urls, panel_stats, panel_caches), 1):
                 stats.requested_rounds += 1
                 request_started = time.monotonic()
-                print(f"  ├─ 面板 {index}/4：请求 {safe_url_label(url)}")
+                print(f"  ├─ 面板 {index}/4：开始请求（地址已隐藏）")
                 text_stream = None
                 try:
                     text_stream = fetch(url, session)
@@ -877,7 +891,7 @@ def main() -> int:
                     retry_value = response.headers.get("Retry-After") if response is not None else None
                     if retry_value:
                         round_retry_after.append(retry_delay(round_number, retry_value))
-                    message = f"{type(exc).__name__}: {redact(str(exc))}"
+                    message = f"{type(exc).__name__}: {redact(str(exc), urls)}"
                     print(f"  │ ✗ 请求失败｜{request_elapsed:.1f} 秒｜历史缓存保留：{message}", file=sys.stderr)
                     link_results.append({"ok": False, "error": message, "elapsed": request_elapsed})
                     continue
@@ -921,33 +935,37 @@ def main() -> int:
                             "round_unique": item.get("round_unique", 0),
                             "added": item.get("added", 0),
                         }
-                        print(
-                            f"    {label}：原始 {source_details[label]['raw']}；"
-                            f"本轮唯一 {source_details[label]['round_unique']}；"
-                            f"新增 {source_details[label]['added']}；"
-                            f"累计 {len(cache['sources'].get(label, {}))}"
-                        )
                     unknown = metric_by_source.get(None, {})
                     unlabelled = {
                         "raw": unknown.get("raw", 0),
                         "round_unique": unknown.get("round_unique", 0),
                         "added": unknown.get("added", 0),
                     }
+                    added_sources = [
+                        f"{label}(+{details['added']})"
+                        for label, details in source_details.items()
+                        if details["added"]
+                    ]
+                    classified_total = sum(len(bucket) for bucket in cache["sources"].values()) + len(cache["unlabelled"])
+                    print(
+                        f"    订阅器分类：{len(SOURCE_LABELS)} 个；分类缓存 {classified_total:,} 条；"
+                        f"链接级唯一 {metric['cumulative']:,} 个；"
+                        f"本轮跨标签重复 {metric['cross_bucket_duplicates']} 个"
+                    )
+                    print("    本轮新增：" + ("、".join(added_sources) if added_sources else "无"))
                     if unlabelled["raw"]:
-                        print(f"    未识别标签：原始 {unlabelled['raw']}；本轮唯一 {unlabelled['round_unique']}；新增 {unlabelled['added']}")
-                    if index == 3:
-                        classified_total = sum(len(bucket) for bucket in cache["sources"].values()) + len(cache["unlabelled"])
                         print(
-                            f"    第 3 链接分类缓存合计 {classified_total} 条；"
-                            f"链接级合并唯一 {metric['cumulative']} 个；"
-                            f"累计跨标签/未标注重复 {metric['cross_bucket_duplicates']} 个"
+                            f"    未识别标签：原始 {unlabelled['raw']}；"
+                            f"本轮唯一 {unlabelled['round_unique']}；新增 {unlabelled['added']}"
                         )
                 link_results.append({"ok": True, "metric": metric, "sources": source_details,
                                      "unlabelled": unlabelled,
                                      "cross_bucket_duplicates": metric["cross_bucket_duplicates"]})
 
             pending = [label for label in SOURCE_LABELS if not panel_caches[2]["sources"].get(label)]
-            round_history.append({"round": round_number, "links": link_results, "pending": pending})
+            round_history.append({
+                "round": round_number, "links": link_results, "pending": pending, "wait_seconds": 0.0
+            })
             print(f"\n第 3 面板订阅器状态：{len(SOURCE_LABELS)-len(pending)}/{len(SOURCE_LABELS)} 已取得有效缓存")
             if not pending:
                 print("✓ 第 3 面板所有已知订阅器均有有效缓存，提前结束。")
@@ -956,6 +974,7 @@ def main() -> int:
                 print("仍未恢复：" + "、".join(pending))
                 delays = round_retry_after
                 delay = max(delays) if delays else retry_delay(round_number, None)
+                round_history[-1]["wait_seconds"] = delay
                 print(f"{delay:g} 秒后开始下一轮；下一轮仍会请求全部四个链接。")
                 if delay:
                     sleep_full_delay(delay)
@@ -999,11 +1018,11 @@ def main() -> int:
             else:
                 failure_report = (
                     "SUB 四面板订阅聚合运行报告\n"
-                    f"运行时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                    f"运行时间：{local_time_text()}\n"
                 )
             failure_report += (
                 "\n【运行结果】\n"
-                f"✗ 运行失败：{type(exc).__name__}: {redact(str(exc))}\n"
+                f"✗ 运行失败：{type(exc).__name__}: {redact(str(exc), urls)}\n"
                 "本次没有完成新的 sub.txt；上一份成功结果保持不变。\n"
             )
             write_stats_only(failure_report)
@@ -1012,8 +1031,11 @@ def main() -> int:
                 f"订阅聚合失败，更新 sub_stats.txt 也失败：{type(log_error).__name__}: {log_error}",
                 file=sys.stderr,
             )
-        print(f"\n✗ SUB 订阅聚合失败：{type(exc).__name__}: {redact(str(exc))}", file=sys.stderr)
-        raise
+        print(f"\n✗ SUB 订阅聚合失败：{type(exc).__name__}: {redact(str(exc), urls)}", file=sys.stderr)
+        # The sanitized message above is the diagnostic; do not let Python's
+        # default traceback print the original requests exception (which may
+        # contain the full subscription URL) again.
+        raise SystemExit(1) from None
     finally:
         session.close()
 
