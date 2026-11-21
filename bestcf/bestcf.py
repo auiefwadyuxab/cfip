@@ -45,6 +45,12 @@ class BestCFError(RuntimeError):
     pass
 
 
+class PanelReadError(BestCFError):
+    def __init__(self, message: str, states: dict[int, "PanelState"]) -> None:
+        super().__init__(message)
+        self.states = dict(states)
+
+
 class BestCFParser(HTMLParser):
     """Read actual URL values in the two wanted HTML sections."""
 
@@ -103,12 +109,15 @@ class BestCFParser(HTMLParser):
             if key:
                 self.found.add(key)
 
-        key = self.current_key
-        if not key:
-            return
+        # Heading fallback must be active even when the source page no longer
+        # wraps the target blocks in the expected section IDs.
         if tag == "h2":
             self.in_h2 = True
             self.current_heading = []
+
+        key = self.current_key
+        if not key:
+            return
 
         for name in ("href", "data-url", "data-link"):
             self.add(key, attr.get(name))
@@ -148,8 +157,10 @@ class BestCFParser(HTMLParser):
 
         if tag == "h2" and self.in_h2:
             key = self.heading_key("".join(self.current_heading))
+            # Every heading ends the previous fallback section. An unrelated
+            # heading must not keep subsequent links attached to an old block.
+            self.fallback_key = key
             if key:
-                self.fallback_key = key
                 self.found.add(key)
             self.in_h2 = False
             self.current_heading = []
@@ -178,6 +189,11 @@ def unique(values: Iterable[str]) -> list[str]:
     return result
 
 
+def same_link_set(actual: Iterable[str], target: Iterable[str]) -> bool:
+    """Compare panel contents without treating order or repeated rows as changes."""
+    return set(actual) == set(target)
+
+
 def fresh_source_url(source_url: str) -> str:
     parsed = urlsplit(source_url)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -202,9 +218,7 @@ def fetch_html(source_url: str, retries: int = FETCH_RETRIES, timeout: int = HTT
     for attempt in range(1, retries + 1):
         try:
             with build_opener().open(Request(request_url, headers=headers), timeout=timeout) as response:
-                data = response.read(8 * 1024 * 1024 + 1)
-                if len(data) > 8 * 1024 * 1024:
-                    raise BestCFError("来源网页超过 8 MiB，停止解析")
+                data = response.read()
                 charset = response.headers.get_content_charset() or "utf-8"
                 return data.decode(charset, errors="replace")
         except Exception as exc:
@@ -406,6 +420,8 @@ class PanelState:
     old_links: list[str]
     target_links: list[str]
     changed: bool
+    write_status: str = "待更新"
+    write_error: str = ""
 
 
 class PanelClient:
@@ -419,9 +435,7 @@ class PanelClient:
 
     def request(self, request: Request) -> tuple[int, str, str, str]:
         with self.opener.open(request, timeout=PANEL_TIMEOUT) as response:
-            data = response.read(1024 * 1024 + 1)
-            if len(data) > 1024 * 1024:
-                raise BestCFError(f"url 第{self.line_no}行面板响应超过1 MiB")
+            data = response.read()
             charset = response.headers.get_content_charset() or "utf-8"
             return response.status, data.decode(charset, errors="replace"), response.headers.get("Content-Type", ""), response.geturl()
 
@@ -512,9 +526,7 @@ class PanelClient:
     def write_and_verify(self, links: list[str]) -> None:
         self.write_add_txt(links)
         actual = parse_panel_text(self.read_add_txt(), self.line_no)
-        matches = actual == links if self.line_no == 2 else (
-            set(actual) == set(links) and len(actual) == len(links)
-        )
+        matches = same_link_set(actual, links)
         if not matches:
             raise BestCFError(
                 f"url 第{self.line_no}行回读不一致：目标 {len(links)} 条，实际 {len(actual)} 条"
@@ -528,17 +540,19 @@ def read_all_panels(targets: dict[int, list[str]], password: str) -> tuple[dict[
     # Read all four first. Do not write any panel if one read/login fails.
     for line_no, host in enumerate(hosts, start=1):
         client = PanelClient(line_no, host, password)
-        body = client.read_add_txt()
-        old = parse_panel_text(body, line_no)
-        target = targets[line_no]
-        if line_no == 2:
-            # yuan.txt order is authoritative for the canonical second panel.
-            changed = old != target
-        else:
-            # Ignore order-only changes on the three feed panels.
-            changed = set(old) != set(target) or len(old) != len(target)
-        clients[line_no] = client
-        states[line_no] = PanelState(line_no, old, target, changed)
+        try:
+            body = client.read_add_txt()
+            old = unique(parse_panel_text(body, line_no))
+            target = unique(targets[line_no])
+            # All four panels compare the actual de-duplicated URL set; ordering and
+            # duplicate-row count alone do not cause a remote write.
+            changed = not same_link_set(old, target)
+            clients[line_no] = client
+            states[line_no] = PanelState(line_no, old, target, changed)
+        except Exception as exc:
+            raise PanelReadError(
+                f"url 第{line_no}行读取/登录失败：{type(exc).__name__}: {exc}", states
+            ) from exc
     return clients, states
 
 
@@ -569,6 +583,16 @@ def log_needs_compaction(path: Path) -> bool:
     except OSError:
         return True
     return bool(re.search(r"https?://|sub://", old_report, re.IGNORECASE))
+
+
+def sanitize_error_message(message: str) -> str:
+    """Keep the useful failure detail without copying credentials or URLs into logs."""
+    message = re.sub(r"https?://[^\s'\"]+", "<URL已隐藏>", message, flags=re.IGNORECASE)
+    for secret_name in ("ADMIN", "url"):
+        secret = os.environ.get(secret_name, "").strip()
+        if secret:
+            message = message.replace(secret, "<已隐藏>")
+    return message
 
 
 def make_log(
@@ -610,12 +634,16 @@ def make_log(
     if states:
         lines += ["", "【面板核对】"]
         for number in (1, 4, 2, 3):
-            state = states[number]
+            state = states.get(number)
+            if state is None:
+                lines.append(f"第{number}行：未完成读取（前序面板读取/登录已失败）")
+                continue
             added, removed = set_diff(state.old_links, state.target_links)
-            status = "已一致" if not state.changed else "已更新" if result.startswith("成功") else "待更新"
+            status = state.write_status if state.changed else "已一致（忽略顺序与重复差异）"
+            detail = f"；错误：{state.write_error}" if state.write_error else ""
             lines.append(
-                f"第{number}行：当前 {len(state.old_links)} → 目标 {len(state.target_links)}；"
-                f"新增 {added} / 删除 {removed}；{status}"
+                f"第{number}行：当前唯一 {len(set(state.old_links))} → 目标唯一 {len(set(state.target_links))}；"
+                f"新增 {added} / 删除 {removed}；{status}{detail}"
             )
     lines += ["", "【结果】", result, "╚══════════════════════════════════════════════════════╝", ""]
     return "\n".join(lines)
@@ -636,11 +664,14 @@ def write_github_summary(status: str, now: str, subs: int, others: int,
     if states:
         lines += ["", "| url 行 | 用途 | 当前 | 目标 | 状态 |", "|---:|---|---:|---:|---|"]
         for number in (1, 4, 2, 3):
-            state = states[number]
-            lines.append(
-                f"| {number} | {panel_role(number)} | {len(state.old_links)} | {len(state.target_links)} | "
-                f"{'需更新' if state.changed else '一致'} |"
-            )
+            state = states.get(number)
+            if state is None:
+                lines.append(f"| {number} | {panel_role(number)} | - | - | 未完成读取 |")
+            else:
+                lines.append(
+                    f"| {number} | {panel_role(number)} | {len(state.old_links)} | {len(state.target_links)} | "
+                    f"{state.write_status} |"
+                )
     with open(summary_path, "a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
@@ -654,16 +685,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yuan", type=Path, default=here / YUAN_NAME)
     parser.add_argument("--log", type=Path, default=here / LOG_NAME)
     parser.add_argument("--skip-panels", action="store_true", help="只测试提取和本地输出，不连接面板")
-    dry_default = os.environ.get("BESTCF_DRY_RUN", "false").strip().lower() in {"1", "true", "yes", "on"}
-    parser.add_argument("--dry-run", action="store_true", default=dry_default,
-                        help="只预览；无论成功或失败都不写入本地文件或面板")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     now = bjt_now()
-    old_subs, old_others, old_raw = read_existing_output(args.output)
+    old_subs: list[str] = []
+    old_others: list[str] = []
+    old_raw = ""
     domains_count = ips_count = 0
     subs: list[str] = []
     others: list[str] = []
@@ -673,14 +703,19 @@ def main() -> int:
     result = "未完成"
     output_changed = False
     source_changed = False
-    compact_old_log = log_needs_compaction(args.log)
+    compact_old_log = False
+    current_stage = "读取现有 bestcf.txt / bestcf.log"
 
     print("\n╭─ BESTCF · 优选链接同步 ────────────────────────────────╮")
     print(f"│ 时间：{now}（北京时间）")
-    print(f"│ 模式：{'只预览' if args.dry_run else '正式运行'}")
+    print("│ 模式：正常同步（手动与定时执行相同）")
     print("╰───────────────────────────────────────────────────────╯")
 
     try:
+        old_subs, old_others, old_raw = read_existing_output(args.output)
+        compact_old_log = log_needs_compaction(args.log)
+
+        current_stage = "抓取来源页面"
         print("\n[1/4] 抓取来源页面")
         source_url = args.source_file.resolve().as_uri() if args.source_file else args.source_url
         source_html = fetch_html(source_url)
@@ -700,6 +735,7 @@ def main() -> int:
         for note in selection_notes:
             print(f"  · {note}")
 
+        current_stage = "读取 yuan.txt 并计算目标"
         print("\n[2/4] 读取 yuan.txt 并计算目标")
         yuan = read_yuan(args.yuan)
         targets = build_targets(subs, others, yuan)
@@ -709,9 +745,6 @@ def main() -> int:
         print(f"  ✓ 目标数量：第1行 {len(targets[1])}、第4行 {len(targets[4])}、第2行 {len(targets[2])}、第3行 {len(targets[3])}")
 
         if args.skip_panels:
-            if args.dry_run:
-                print("\n<预览> 已跳过面板；未写入任何文件。")
-                return 0
             if output_changed:
                 atomic_write(args.output, output_content)
                 print("  ✓ bestcf.txt 已更新")
@@ -720,21 +753,18 @@ def main() -> int:
             print("\n本地提取测试完成。")
             return 0
 
+        current_stage = "登录并读取四个面板"
         print("\n[3/4] 登录并读取四个面板")
         password = read_admin_password()
         clients, states = read_all_panels(targets, password)
         changed_lines = [number for number, state in states.items() if state.changed]
+        for state in states.values():
+            state.write_status = "待更新" if state.changed else "已一致（忽略顺序与重复差异）"
         print("\n面板核对：")
         for number in (1, 4, 2, 3):
             state = states[number]
             status = "需要更新" if state.changed else "已一致"
             print(f"  第{number}行（{panel_role(number)}）：{len(state.old_links)} → {len(state.target_links)}/49，{status}")
-
-        if args.dry_run:
-            result = "预览完成：只读取和比较，没有写入面板或本地文件。"
-            print("\n<预览完成> 没有修改面板、bestcf.txt 或 bestcf.log。")
-            write_github_summary("预览完成（未写入）", now, len(subs), len(others), states)
-            return 0
 
         if not source_changed and not output_changed and not changed_lines and not compact_old_log:
             result = "无变化：链接集合和四个面板均一致；所有文件和面板保持原样。"
@@ -742,6 +772,7 @@ def main() -> int:
             write_github_summary("无变化", now, len(subs), len(others), states)
             return 0
 
+        current_stage = "写入有变化的面板并回读核验"
         print("\n[4/4] 写入有变化的面板并回读核验")
         updated: list[int] = []
         for number in (1, 4, 2, 3):
@@ -750,9 +781,17 @@ def main() -> int:
                 print(f"  = 第{number}行：跳过")
                 continue
             print(f"  ↻ 第{number}行：写入 {len(state.target_links)} 条…")
-            clients[number].write_and_verify(state.target_links)
-            updated.append(number)
-            print(f"  ✓ 第{number}行：写入成功，回读核验通过")
+            try:
+                clients[number].write_and_verify(state.target_links)
+            except Exception as panel_exc:
+                state.write_status = "写入/回读失败"
+                state.write_error = f"{type(panel_exc).__name__}: {panel_exc}"
+                print(f"  ✗ 第{number}行：{state.write_status}；{state.write_error}", file=sys.stderr)
+                raise
+            else:
+                state.write_status = "已写入并回读核验"
+                updated.append(number)
+                print(f"  ✓ 第{number}行：写入成功，回读核验通过")
 
         if output_changed:
             atomic_write(args.output, output_content)
@@ -778,22 +817,40 @@ def main() -> int:
         return 0
 
     except Exception as exc:
-        result = f"失败：{exc}"
-        print(f"\n✗ BESTCF 执行失败：{exc}", file=sys.stderr)
-        if not args.dry_run and (domains_count or ips_count):
-            try:
+        if isinstance(exc, PanelReadError):
+            states = exc.states
+        safe_error = sanitize_error_message(f"{type(exc).__name__}: {exc}")
+        result = f"失败：{safe_error}"
+        print(f"\n✗ BESTCF 执行失败：{safe_error}", file=sys.stderr)
+        try:
+            if domains_count or ips_count:
                 if not targets:
-                    # If panel configuration/authentication fails, still report
-                    # source/yuan counts without embedding any URL contents.
                     targets = {1: others[:49], 2: unique(yuan + others[98:]),
                                3: subs, 4: others[49:98]}
                 report = make_log(
                     now, domains_count, ips_count, subs, others, old_subs, old_others,
                     yuan, targets, states or None, result,
                 )
-                atomic_write(args.log, report)
-            except Exception:
-                pass
+                report = report.replace(
+                    "【结果】",
+                    f"【失败阶段】\n{current_stage}\n\n【结果】",
+                    1,
+                )
+            else:
+                report = "\n".join([
+                    "BESTCF 本次运行失败",
+                    f"时间：{now}（北京时间）",
+                    f"失败阶段：{current_stage}",
+                    f"已取得优选域名版块：{domains_count} 条",
+                    f"已取得优选IP版块：{ips_count} 条",
+                    f"错误：{safe_error}",
+                    "未使用未验证的抓取结果覆盖 bestcf.txt。",
+                    "",
+                ])
+            atomic_write(args.log, report)
+            print(f"失败日志已覆盖写入：{args.log}", file=sys.stderr)
+        except Exception as log_exc:
+            print(f"失败日志写入也未成功：{type(log_exc).__name__}: {log_exc}", file=sys.stderr)
         write_github_summary("执行失败", now, len(subs), len(others), states or None)
         print("本次没有使用未验证的抓取结果覆盖 bestcf.txt。", file=sys.stderr)
         return 1
