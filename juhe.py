@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
+import os
+import shutil
 import sys
-from collections import OrderedDict
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -16,7 +19,7 @@ ROOT = Path(__file__).resolve().parent
 OUTPUT_FILE = ROOT / "juhe.txt"
 LOG_FILE = ROOT / "juhe.log"
 
-# 按这个顺序读取；重复项保留第一次出现的记录。
+# 保留现有读取/输出顺序；去重只删除后续重复行，不代表来源质量优先级。
 SOURCES = (
     ("sub/sub.txt", ROOT / "sub" / "sub.txt", True),
     ("danfeng/danfeng.txt", ROOT / "danfeng" / "danfeng.txt", True),
@@ -114,7 +117,10 @@ def parse_endpoint(raw_line: str) -> Optional[str]:
     return f"{endpoint_host}:{port_number}"
 
 
-def read_source(name: str, path: Path, required: bool) -> tuple[list[str], dict[str, int | bool | str]]:
+def read_source_into(
+    name: str, path: Path, required: bool, global_unique: dict[str, None]
+) -> dict[str, int | bool | str]:
+    """Read one input line-by-line and merge into the ordered global key set."""
     stats: dict[str, int | bool | str] = {
         "exists": path.is_file(),
         "lines": 0,
@@ -122,6 +128,7 @@ def read_source(name: str, path: Path, required: bool) -> tuple[list[str], dict[
         "invalid": 0,
         "unique": 0,
         "duplicates_inside": 0,
+        "new_to_global": 0,
         "error": "",
     }
 
@@ -129,12 +136,11 @@ def read_source(name: str, path: Path, required: bool) -> tuple[list[str], dict[
         stats["error"] = "文件不存在"
         if required:
             raise FileNotFoundError(f"必需输入文件不存在：{path}")
-        return [], stats
+        return stats
 
-    records: list[str] = []
-    seen: set[str] = set()
+    local_seen: set[str] = set()
     try:
-        with path.open("r", encoding="utf-8-sig", errors="replace") as file:
+        with path.open("r", encoding="utf-8-sig", errors="strict") as file:
             for raw_line in file:
                 if not raw_line.strip():
                     continue
@@ -144,26 +150,106 @@ def read_source(name: str, path: Path, required: bool) -> tuple[list[str], dict[
                     stats["invalid"] = int(stats["invalid"]) + 1
                     continue
                 stats["valid"] = int(stats["valid"]) + 1
-                records.append(endpoint)
-                seen.add(endpoint)
+                if endpoint in local_seen:
+                    continue
+                local_seen.add(endpoint)
+                if endpoint not in global_unique:
+                    global_unique[endpoint] = None
+                    stats["new_to_global"] = int(stats["new_to_global"]) + 1
     except OSError as exc:
         stats["error"] = f"读取失败：{exc}"
         if required:
             raise
-        return [], stats
+        return stats
 
-    stats["unique"] = len(seen)
-    stats["duplicates_inside"] = int(stats["valid"]) - len(seen)
-    return records, stats
+    stats["unique"] = len(local_seen)
+    stats["duplicates_inside"] = int(stats["valid"]) - len(local_seen)
+    return stats
 
 
-def write_log(summary: str) -> None:
-    LOG_FILE.write_text(summary.rstrip() + "\n", encoding="utf-8")
+def read_source(name: str, path: Path, required: bool) -> tuple[list[str], dict[str, int | bool | str]]:
+    """Compatibility helper retained for tests and one-off inspection."""
+    merged: dict[str, None] = {}
+    stats = read_source_into(name, path, required, merged)
+    return list(merged), stats
 
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_outputs_atomically(endpoints, summary: str) -> None:
+    """Stream the list to a staged file and restore the previous pair on failure."""
+    destinations = (OUTPUT_FILE, LOG_FILE)
+    replaced: list[Path] = []
+
+    with tempfile.TemporaryDirectory(prefix=".juhe-stage-", dir=ROOT) as temp_name:
+        stage_dir = Path(temp_name)
+        staged_output = stage_dir / OUTPUT_FILE.name
+        staged_log = stage_dir / LOG_FILE.name
+        backups: dict[Path, Path | None] = {}
+        for destination in destinations:
+            if destination.exists():
+                backup = stage_dir / f"backup-{destination.name}"
+                shutil.copy2(destination, backup)
+                backups[destination] = backup
+            else:
+                backups[destination] = None
+
+        with staged_output.open("w", encoding="utf-8", newline="\n", buffering=1024 * 1024) as handle:
+            if isinstance(endpoints, str):
+                for endpoint in endpoints.splitlines():
+                    handle.write(endpoint)
+                    handle.write("\n")
+            else:
+                for endpoint in endpoints:
+                    handle.write(endpoint)
+                    handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        with staged_log.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(summary.rstrip() + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        expected = {
+            OUTPUT_FILE: _sha256_file(staged_output),
+            LOG_FILE: _sha256_file(staged_log),
+        }
+        try:
+            staged_output.replace(OUTPUT_FILE)
+            replaced.append(OUTPUT_FILE)
+            staged_log.replace(LOG_FILE)
+            replaced.append(LOG_FILE)
+            for destination in destinations:
+                if _sha256_file(destination) != expected[destination]:
+                    raise OSError(f"{destination.name} 写入后 SHA-256 回读不一致")
+        except Exception as write_error:
+            rollback_errors: list[str] = []
+            for destination in reversed(replaced):
+                backup = backups[destination]
+                try:
+                    if backup is None:
+                        destination.unlink(missing_ok=True)
+                    else:
+                        restore = stage_dir / f"restore-{destination.name}"
+                        shutil.copy2(backup, restore)
+                        restore.replace(destination)
+                except OSError as rollback_error:
+                    rollback_errors.append(f"{destination.name}: {rollback_error}")
+            if rollback_errors:
+                raise OSError(
+                    f"juhe 输出失败：{write_error}；回滚失败：{'；'.join(rollback_errors)}"
+                ) from write_error
+            raise
 
 def main() -> int:
     now = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S %z")
-    global_unique: OrderedDict[str, None] = OrderedDict()
+    global_unique: dict[str, None] = {}
     source_stats: list[tuple[str, dict[str, int | bool | str], int]] = []
     total_valid = 0
     total_lines = 0
@@ -171,59 +257,59 @@ def main() -> int:
 
     try:
         for name, path, required in SOURCES:
-            records, stats = read_source(name, path, required)
+            stats = read_source_into(name, path, required, global_unique)
             total_lines += int(stats["lines"])
             total_valid += int(stats["valid"])
             total_invalid += int(stats["invalid"])
 
-            unique_before = len(global_unique)
-            for endpoint in records:
-                global_unique.setdefault(endpoint, None)
-            new_from_source = len(global_unique) - unique_before
+            new_from_source = int(stats.get("new_to_global", 0))
             # 当前源内重复已单独统计；跨来源重复 = 本源独有数 - 本次新增数。
             source_stats.append((name, stats, new_from_source))
-
-        output = "".join(endpoint + "\n" for endpoint in global_unique)
-        OUTPUT_FILE.write_text(output, encoding="utf-8")
 
         unique_total = len(global_unique)
         duplicates_removed = total_valid - unique_total
         lines = [
-            "IP:端口去重汇总日志",
+            "╭────────────────────────────────────────────────────────────╮",
+            "│ JUHE · 三来源 HOST:PORT 去重汇总报告                       │",
+            "╰────────────────────────────────────────────────────────────╯",
             f"运行时间：{now}",
+            "处理方式：按 sub → Danfeng → VPS789 顺序读取；统一规范化并去重。",
+            "说明：输入顺序只决定重复项的位置，不代表来源质量优先级。",
             "",
-            "输入文件统计：",
+            "【一、输入文件明细】",
         ]
-        for name, stats, new_count in source_stats:
+        for index, (name, stats, new_count) in enumerate(source_stats, 1):
             lines.extend(
                 [
-                    f"- {name}",
-                    f"  文件状态：{'存在' if stats['exists'] else '缺失（按空文件处理）'}",
-                    f"  非空行数：{stats['lines']}",
-                    f"  有效记录：{stats['valid']}",
-                    f"  无效/跳过：{stats['invalid']}",
-                    f"  本文件去重后：{stats['unique']}",
-                    f"  文件内部重复：{stats['duplicates_inside']}",
-                    f"  新增到总表：{new_count}",
-                    f"  与前面文件重复：{int(stats['unique']) - new_count}",
+                    f"{index}. {name}",
+                    f"   文件状态：{'存在' if stats['exists'] else '缺失'}",
+                    f"   读取非空行：{int(stats['lines']):,}",
+                    f"   有效 HOST:PORT：{int(stats['valid']):,}",
+                    f"   无效/跳过：{int(stats['invalid']):,}",
+                    f"   本文件唯一：{int(stats['unique']):,}",
+                    f"   文件内部重复：{int(stats['duplicates_inside']):,}",
+                    f"   新增到总表：{new_count:,}",
+                    f"   与前面来源重复：{int(stats['unique']) - new_count:,}",
                 ]
             )
             if stats["error"]:
-                lines.append(f"  备注：{stats['error']}")
+                lines.append(f"   备注：{stats['error']}")
+            lines.append("")
 
         lines.extend(
             [
-                "",
-                "总计：",
-                f"所有输入非空行：{total_lines}",
-                f"有效 host:port 记录：{total_valid}",
-                f"无效/跳过记录：{total_invalid}",
-                f"去重后总数：{unique_total}",
-                f"重复移除总数：{duplicates_removed}",
+                "【二、最终汇总】",
+                f"所有来源非空行：{total_lines:,}",
+                f"有效 HOST:PORT：{total_valid:,}",
+                f"无效/跳过记录：{total_invalid:,}",
+                f"最终唯一 HOST:PORT：{unique_total:,}",
+                f"移除重复记录：{duplicates_removed:,}",
                 f"输出文件：{OUTPUT_FILE.name}",
+                "",
+                "✓ 汇总完成",
             ]
         )
-        write_log("\n".join(lines))
+        write_outputs_atomically(global_unique.keys(), "\n".join(lines))
 
         print("汇总完成")
         print(f"有效记录：{total_valid}")
@@ -235,13 +321,17 @@ def main() -> int:
 
     except Exception as exc:
         error_text = (
-            "IP:端口去重汇总失败\n"
+            "╭────────────────────────────────────────────────────────────╮\n"
+            "│ JUHE · 去重汇总失败                                         │\n"
+            "╰────────────────────────────────────────────────────────────╯\n"
             f"运行时间：{now}\n"
             f"错误：{type(exc).__name__}: {exc}\n"
-            "未生成新的 juhe.txt。"
+            "未生成新的 juhe.txt；上一份成功结果保持不变。"
         )
         try:
-            write_log(error_text)
+            temp_log = LOG_FILE.with_name(LOG_FILE.name + ".tmp")
+            temp_log.write_text(error_text.rstrip() + "\n", encoding="utf-8")
+            os.replace(temp_log, LOG_FILE)
         except OSError:
             pass
         print(f"汇总失败：{type(exc).__name__}: {exc}", file=sys.stderr)
