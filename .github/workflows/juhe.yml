@@ -1,13 +1,12 @@
 name: IP 去重汇总
 
 on:
-  # 手动或其他方式直接修改 sub/sub.txt 时触发。
+  # 用户手动直接修改 sub/sub.txt 并推送时，仍会触发 juhe。
   push:
     paths:
       - 'sub/sub.txt'
 
-  # 订阅聚合使用 GITHUB_TOKEN 自动提交时，push 事件不会继续触发工作流；
-  # 因此在“订阅聚合”结束后接力运行本工作流。
+  # sub 使用 GITHUB_TOKEN 推送不会触发新的 push workflow，改由 workflow_run 接力。
   workflow_run:
     workflows:
       - '订阅聚合'
@@ -15,45 +14,92 @@ on:
       - completed
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
-  group: juhe-aggregate-${{ github.event.repository.default_branch }}
+  group: juhe-aggregate-${{ github.event.repository.default_branch || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   aggregate:
-    # workflow_run 只接受成功结束的订阅聚合；sub.txt 的直接 push 正常运行。
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       PYTHONUNBUFFERED: '1'
       TARGET_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
+      - name: 检查 sub 的实际聚合任务是否成功
+        id: upstream
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id }}
+          UPSTREAM_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          jobs_json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${UPSTREAM_RUN_ID}/attempts/${UPSTREAM_ATTEMPT}/jobs?per_page=100")"
+          conclusion="$(printf '%s' "$jobs_json" | jq -r \
+            '[.jobs[] | select(.name == "订阅聚合") | .conclusion] | last // "missing"')"
+          echo "上游订阅聚合 Job 结论：$conclusion"
+          if [[ "$conclusion" == "success" ]]; then
+            echo 'allowed=true' >> "$GITHUB_OUTPUT"
+            echo '✓ 上游实际聚合任务成功，允许 juhe 汇总。'
+          else
+            echo 'allowed=false' >> "$GITHUB_OUTPUT"
+            echo '上游聚合 Job 未成功执行，本次不读取旧 sub.txt。'
+          fi
+
       - name: 检出仓库
+        if: github.event_name != 'workflow_run' || steps.upstream.outputs.allowed == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # workflow_run 时检出订阅聚合结束后的默认分支最新内容。
           ref: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref }}
+          fetch-depth: 0
 
-      - name: 设置 Python
+      - name: 配置 Python
+        if: github.event_name != 'workflow_run' || steps.upstream.outputs.allowed == 'true'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13'
 
-      - name: 运行去重汇总
+      - name: 运行 juhe 去重汇总
+        if: github.event_name != 'workflow_run' || steps.upstream.outputs.allowed == 'true'
         run: python juhe.py
 
-      - name: 提交汇总结果和统计日志
+      - name: 提交汇总结果和日志
+        if: github.event_name != 'workflow_run' || steps.upstream.outputs.allowed == 'true'
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -- juhe.txt juhe.log
           if git diff --cached --quiet; then
-            echo '汇总结果和日志均无变化，无需提交。'
-          else
-            git commit -m 'chore: 更新 IP 去重汇总'
-            git push origin "HEAD:${TARGET_BRANCH}"
+            echo '汇总结果和日志均无变化。'
+            exit 0
           fi
+          git diff --cached --check
+          git commit -m 'chore: 更新 IP 去重汇总'
+          for attempt in 1 2 3; do
+            if ! git fetch origin "$TARGET_BRANCH"; then
+              echo "获取远端分支失败，第 ${attempt}/3 次。" >&2
+            elif ! git rebase "origin/$TARGET_BRANCH"; then
+              git rebase --abort || true
+              echo '同步远端提交时发生冲突，停止推送。' >&2
+              exit 1
+            elif git push origin "HEAD:$TARGET_BRANCH"; then
+              exit 0
+            else
+              echo "推送失败，第 ${attempt}/3 次。" >&2
+            fi
+            sleep "$((attempt * 2))"
+          done
+          echo '推送在 3 次尝试后仍失败。' >&2
+          exit 1

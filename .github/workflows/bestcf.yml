@@ -1,14 +1,8 @@
 name: bestcf
 
 on:
-  # 定时运行由 Cloudflare Worker 负责；这里仅保留手动运行入口。
+  # 定时运行由 Cloudflare Worker 负责；这里保留手动运行入口。
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "只预览，不修改面板或仓库文件"
-        required: true
-        type: boolean
-        default: true
 
 concurrency:
   group: bestcf-daily-sync
@@ -24,82 +18,61 @@ jobs:
     env:
       ADMIN: ${{ secrets.ADMIN }}
       url: ${{ secrets.url }}
-      BESTCF_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      TARGET_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
 
     steps:
-      - name: Checkout
+      - name: 检出仓库
         id: checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch || github.ref }}
           fetch-depth: 0
 
-      - name: Setup Python
+      - name: 配置 Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: '3.13'
 
-      - name: Collect links and synchronize panels
-        id: collect
+      - name: 抓取链接并同步四个面板
+        id: bestcf
         run: python bestcf/bestcf.py
 
-      # Only commit after the collector finished successfully; preview never commits.
-      - name: Commit changed output and count-only report
-        if: steps.collect.outcome == 'success' && env.BESTCF_DRY_RUN != 'true'
+      - name: 提交输出和最新运行日志
+        if: always() && steps.checkout.outcome == 'success'
         shell: bash
+        env:
+          BESTCF_OUTCOME: ${{ steps.bestcf.outcome }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [[ -f bestcf/bestcf.txt ]]; then
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # 成功时提交输出和日志；失败时只提交诊断日志，绝不提交未完成的新输出。
+          git add -- bestcf/bestcf.log
+          if [[ "$BESTCF_OUTCOME" == "success" ]]; then
             git add -- bestcf/bestcf.txt
-          fi
-          if [[ -f bestcf/bestcf.log ]]; then
-            git add -- bestcf/bestcf.log
+          else
+            echo 'bestcf 执行失败：只提交本次诊断日志，不提交 bestcf.txt。' >&2
           fi
           if git diff --cached --quiet; then
-            echo "输出和日志没有变化，不创建提交。"
+            echo '输出和日志没有变化，无需提交。'
             exit 0
           fi
-          git commit -m "chore(bestcf): update links and count report"
+          git diff --cached --check
+          git commit -m 'chore(bestcf): update links and count report'
 
-          # sub 与 vps789 会在 bestcf 完成后并行接力；手动工作流或其他提交
-          # 也可能恰好更新同一分支，因此同步远端并对短暂推送竞争做有限重试。
           for attempt in 1 2 3; do
-            if ! git fetch origin "${GITHUB_REF_NAME}"; then
+            if ! git fetch origin "$TARGET_BRANCH"; then
               echo "获取远端分支失败，第 ${attempt}/3 次。" >&2
-            elif ! git rebase "origin/${GITHUB_REF_NAME}"; then
+            elif ! git rebase "origin/$TARGET_BRANCH"; then
               git rebase --abort || true
-              echo "同步远端时发生文件冲突，停止推送。" >&2
+              echo '同步远端时发生文件冲突，停止推送。' >&2
               exit 1
-            elif git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            elif git push origin "HEAD:$TARGET_BRANCH"; then
               exit 0
             else
-              echo "推送失败，第 ${attempt}/3 次；准备重新同步远端。" >&2
+              echo "推送失败，第 ${attempt}/3 次。" >&2
             fi
-
             sleep "$((attempt * 2))"
           done
-
-          echo "推送在 3 次尝试后仍失败。" >&2
+          echo '推送在 3 次尝试后仍失败。' >&2
           exit 1
-
-      # This marker is deliberately created only after collection, panel writes,
-      # output commit, and push have all succeeded in a non-preview run.
-      - name: Prepare successful production-run marker
-        if: success() && env.BESTCF_DRY_RUN != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf 'workflow=bestcf\nrun_id=%s\nrun_attempt=%s\nref=%s\ndry_run=false\n' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_REF_NAME" \
-            > "$RUNNER_TEMP/bestcf-production-success.txt"
-
-      - name: Publish successful production-run marker
-        if: success() && env.BESTCF_DRY_RUN != 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          # 每次重跑都会有新的 run_attempt，防止旧标记被误用。
-          name: bestcf-production-success-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/bestcf-production-success.txt
-          if-no-files-found: error
-          retention-days: 1

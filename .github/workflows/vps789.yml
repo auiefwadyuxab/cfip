@@ -1,13 +1,11 @@
 name: vps789
 
 on:
-  # bestcf 正式运行成功后自动接力；预览和失败运行会被后置门禁跳过。
   workflow_run:
     workflows:
       - 'bestcf'
     types:
       - completed
-  # 保留手动运行；自动运行只接收 bestcf 正式成功后的接力。
   workflow_dispatch:
 
 permissions:
@@ -15,86 +13,53 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: vps789-${{ github.event.repository.default_branch || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  production-gate:
-    name: 检查 bestcf 是否正式成功
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-    outputs:
-      allowed: ${{ steps.gate.outputs.allowed }}
-    steps:
-      - name: 下载上游 bestcf 正式成功标记
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: bestcf-production-success-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.workflow_run.id }}
-          path: ${{ runner.temp }}/bestcf-trigger
-
-      - name: 判断是否允许启动
-        id: gate
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          SOURCE_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-
-          # 手动启动不受 bestcf 接力标记限制。
-          if [[ "$EVENT_NAME" != "workflow_run" ]]; then
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
-            echo "✓ 手动触发，按原有方式运行。"
-            exit 0
-          fi
-
-          marker="$RUNNER_TEMP/bestcf-trigger/bestcf-production-success.txt"
-          if [[ -s "$marker" ]] \
-            && [[ "$SOURCE_HEAD_BRANCH" == "$DEFAULT_BRANCH" ]] \
-            && grep -Fqx 'workflow=bestcf' "$marker" \
-            && grep -Fqx "run_id=${SOURCE_RUN_ID}" "$marker" \
-            && grep -Fqx "run_attempt=${SOURCE_RUN_ATTEMPT}" "$marker" \
-            && grep -Fqx "ref=${SOURCE_HEAD_BRANCH}" "$marker" \
-            && grep -Fqx 'dry_run=false' "$marker"; then
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
-            echo "✓ 上游 bestcf 正式运行成功，允许启动。"
-          else
-            echo "allowed=false" >> "$GITHUB_OUTPUT"
-            echo "上游 bestcf 没有对应的正式成功标记（可能是预览、失败或标记下载失败），跳过本次接力。"
-          fi
-
   update:
-    needs: production-gate
-    if: needs.production-gate.outputs.allowed == 'true'
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      PYTHONUNBUFFERED: "1"
+      PYTHONUNBUFFERED: '1'
+      TARGET_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref_name }}
+      VPS789_DIAGNOSTICS_DIR: ${{ runner.temp }}/vps789-diagnostics
+      VPS789_ARTIFACT_DIR: ${{ runner.temp }}/vps789-artifact
 
     steps:
       - name: 检出仓库
+        id: checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.repository.default_branch || github.ref }}
           fetch-depth: 0
+
+      - name: 初始化本次运行日志和诊断目录
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f vps789/vps789.log
+          rm -rf "$VPS789_DIAGNOSTICS_DIR" "$VPS789_ARTIFACT_DIR"
+          mkdir -p "$VPS789_DIAGNOSTICS_DIR" "$VPS789_ARTIFACT_DIR"
+          {
+            echo 'VPS789 本次运行日志'
+            echo "开始时间：$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
+            echo '状态：工作流已启动，等待抓取。'
+            echo
+          } > vps789/vps789.log
 
       - name: 配置 Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: '3.13'
           cache: pip
           cache-dependency-path: vps789/requirements.txt
 
-      - name: 恢复 Playwright 浏览器缓存
+      - name: 恢复 Chromium 浏览器缓存
         id: playwright-cache
         continue-on-error: true
         uses: actions/cache/restore@v6
@@ -104,18 +69,15 @@ jobs:
 
       - name: 安装 Python 依赖
         working-directory: vps789
-        run: |
-          set -euo pipefail
-          python -m pip install --requirement requirements.txt --disable-pip-version-check
+        run: python -m pip install --requirement requirements.txt --disable-pip-version-check
 
       - name: 准备并校验 Chromium
+        shell: bash
         run: |
           set -euo pipefail
-
           smoke_test() {
             python - <<'PY'
           from playwright.sync_api import sync_playwright
-
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               page = browser.new_page()
@@ -124,154 +86,150 @@ jobs:
               browser.close()
           PY
           }
-
           if [[ "${{ steps.playwright-cache.outputs.cache-hit }}" == "true" ]]; then
-            echo "Playwright 浏览器缓存命中，先做实际启动校验。"
+            echo "Chromium 浏览器缓存命中，执行启动检查。"
             if smoke_test; then
               exit 0
             fi
-            echo "Playwright 浏览器缓存校验失败，执行强制修复安装。" >&2
+            echo "缓存无法启动，重新安装 Chromium。" >&2
             python -m playwright install --force --with-deps --only-shell chromium
           else
-            echo "Playwright 浏览器缓存未命中，执行首次安装。"
+            echo "未命中 Chromium 浏览器缓存，执行安装。"
             python -m playwright install --with-deps --only-shell chromium
           fi
-
           smoke_test
 
-      - name: 保存 Playwright 浏览器缓存
+      - name: 抓取并生成六端口文件、all.txt 和最新日志
+        id: scrape
+        working-directory: vps789
+        run: python vps789.py
+
+      - name: 校验六端口文件、域名去重及 all.txt
+        id: validate
+        working-directory: vps789
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(443.txt 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt)
+          expected_ports=(443 8443 2053 2083 2087 2096)
+
+          for i in "${!files[@]}"; do
+            file="${files[$i]}"
+            port="${expected_ports[$i]}"
+            test -s "$file"
+            awk -v port="$port" '
+              /^[[:space:]]*$/ { print "发现空行"; exit 1 }
+              /[[:space:]]/ { print "发现空白字符: " $0; exit 1 }
+              {
+                n = split($0, parts, "#")
+                if (n < 2) { print "缺少 # 分隔: " $0; exit 1 }
+                split(parts[1], hp, ":")
+                if (length(hp) != 2 || hp[2] != port || hp[1] == "") {
+                  print "域名或端口结构错误: " $0; exit 1
+                }
+                host = tolower(hp[1])
+                sub(/\.$/, "", host)
+                if (seen[host]++) { print "同一端口文件中域名重复: " hp[1]; exit 1 }
+              }
+            ' "$file"
+            echo "✓ $file：$(wc -l < "$file") 个唯一域名"
+          done
+
+          # 每个端口文件必须包含相同域名且顺序一致。
+          awk -F '[:#]' '{ h=tolower($1); sub(/\.$/, "", h); print h }' 443.txt > /tmp/vps789-hosts-443.txt
+          for file in 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt; do
+            awk -F '[:#]' '{ h=tolower($1); sub(/\.$/, "", h); print h }' "$file" > "/tmp/vps789-hosts-${file%.txt}.txt"
+            cmp -s /tmp/vps789-hosts-443.txt "/tmp/vps789-hosts-${file%.txt}.txt"
+          done
+
+          cat "${files[@]}" > /tmp/vps789-all-expected.txt
+          cmp -s /tmp/vps789-all-expected.txt all.txt
+          test "$(wc -l < all.txt)" -eq "$(( $(wc -l < 443.txt) * 6 ))"
+          test -s vps789.log
+          echo "✓ all.txt：$(wc -l < all.txt) 条，等于六端口文件直接拼接"
+          echo '✓ vps789.log：本次运行日志已生成并覆盖'
+
+      - name: 保存 Chromium 浏览器缓存
         if: ${{ steps.playwright-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/ms-playwright/chromium_headless_shell-*
-          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-headless-shell-v1-${{ hashFiles('vps789/requirements.txt') }}
 
-      - name: 抓取并生成六个端口文件及 all.txt
-        id: scrape
-        working-directory: vps789
-        run: |
-          set -euo pipefail
-          python vps789.py
-
-      - name: 上传失败诊断
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: vps789-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: vps789/.diagnostics/
-          if-no-files-found: ignore
-          retention-days: 3
-
-      - name: 严格检查六个端口文件及总汇总
-        working-directory: vps789
+      - name: 整理本次运行 Artifact
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$VPS789_ARTIFACT_DIR"
+          if [[ -f vps789/vps789.log ]]; then
+            cp -f vps789/vps789.log "$VPS789_ARTIFACT_DIR/vps789.log"
+          fi
+          if [[ -d "$VPS789_DIAGNOSTICS_DIR" ]]; then
+            find "$VPS789_DIAGNOSTICS_DIR" -maxdepth 1 -type f -exec cp -f {} "$VPS789_ARTIFACT_DIR/" \;
+          fi
+          echo '本次运行 Artifact 文件：'
+          find "$VPS789_ARTIFACT_DIR" -maxdepth 1 -type f -printf '%f\n' | sort
 
-          files=(443.txt 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt)
-          expected_ports=(443 8443 2053 2083 2087 2096)
-          counts=()
-          total=0
+      - name: 上传本次运行日志和网页诊断资料
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vps789-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vps789-artifact/
+          if-no-files-found: warn
 
-          for i in "${!files[@]}"; do
-            file="${files[$i]}"
-            port="${expected_ports[$i]}"
-
-            test -s "$file"
-            count=$(grep -cve '^[[:space:]]*$' "$file")
-            echo "$file -> $count lines"
-            test "$count" -ge 1
-            counts+=("$count")
-            total=$((total + count))
-
-            awk -v port="$port" '
-              /^[[:space:]]*$/ { next }
-              {
-                prefix = "^[^:#[:space:]]+:" port "#"
-                if ($0 !~ prefix) {
-                  print "非法输出行（端口或结构错误）: " $0
-                  exit 1
-                }
-
-                info = $0
-                sub(/^.*#/, "", info)
-
-                # 网页源：完整延迟、丢包率和下载速度。
-                # API 补充：允许下载速度为空，但延迟和丢包率必须存在。
-                if (info !~ /^[0-9]+(\.[0-9]+)?ms\/[0-9]+(\.[0-9]+)?-[0-9]+(\.[0-9]+)?(KB|MB|GB|TB)\/s$/ &&
-                    info !~ /^[0-9]+(\.[0-9]+)?ms\/[0-9]+(\.[0-9]+)?-$/) {
-                  print "非法 info: " $0
-                  exit 1
-                }
-              }
-            ' "$file"
-          done
-
-          # 六个端口文件必须行数相同，且域名/测速字段顺序完全一致。
-          for i in 1 2 3 4 5; do
-            test "${counts[0]}" -eq "${counts[$i]}"
-          done
-
-          # all.txt 必须严格等于六个端口文件按指定顺序的直接拼接。
-          test -s all.txt
-          cat "${files[@]}" > /tmp/vps789_all_expected.txt
-          cmp -s /tmp/vps789_all_expected.txt all.txt
-          all_count=$(grep -cve '^[[:space:]]*$' all.txt)
-          test "$all_count" -eq "$total"
-          echo "all.txt -> $all_count lines（六个端口文件原样汇总）"
-
-          awk -F'#' '{sub(/:[0-9]+$/, "", $1); print $1}' 443.txt > /tmp/vps789_hosts_443.txt
-          for file in 8443.txt 2053.txt 2083.txt 2087.txt 2096.txt; do
-            awk -F'#' '{sub(/:[0-9]+$/, "", $1); print $1}' "$file" > "/tmp/vps789_hosts_${file%.txt}.txt"
-            cmp -s /tmp/vps789_hosts_443.txt "/tmp/vps789_hosts_${file%.txt}.txt"
-          done
-
-      - name: 检查工作区是否只产生预期输出变化
+      - name: 确认工作区只有预期输出变化
         run: |
           set -euo pipefail
           git status --short
-          unexpected=$(git status --short --untracked-files=all | grep -vE '^.. vps789/(443|8443|2053|2083|2087|2096|all)\.txt$' || true)
+          unexpected=$(git status --short --untracked-files=all | grep -vE '^.. vps789/(443|8443|2053|2083|2087|2096|all)\.txt$|^.. vps789/vps789\.log$' || true)
           if [[ -n "$unexpected" ]]; then
-            echo "发现非预期文件变化："
-            printf '%s\n' "$unexpected"
+            echo '发现非预期文件变化：' >&2
+            printf '%s\n' "$unexpected" >&2
             exit 1
           fi
 
-      - name: 提交并推送
+      - name: 提交本次日志与成功的抓取结果
+        if: always() && steps.checkout.outcome == 'success'
+        shell: bash
         env:
-          TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+          SCRAPE_OUTCOME: ${{ steps.scrape.outcome }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
         run: |
           set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add vps789/443.txt \
-                  vps789/8443.txt \
-                  vps789/2053.txt \
-                  vps789/2083.txt \
-                  vps789/2087.txt \
-                  vps789/2096.txt \
-                  vps789/all.txt
-
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if [[ -f vps789/vps789.log ]]; then
+            git add -- vps789/vps789.log
+          fi
+          if [[ "$SCRAPE_OUTCOME" == "success" && "$VALIDATE_OUTCOME" == "success" ]]; then
+            git add -- vps789/443.txt vps789/8443.txt vps789/2053.txt \
+              vps789/2083.txt vps789/2087.txt vps789/2096.txt \
+              vps789/all.txt
+          else
+            echo '本次抓取或校验未成功：只提交本次日志，不提交端口结果。' >&2
+          fi
           if git diff --cached --quiet; then
-            echo "七个输出文件没有变化，跳过提交。"
+            echo '日志和抓取结果没有变化。'
             exit 0
           fi
-
           git diff --cached --check
-          now="$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
-          git commit -m "vps789: update ${now}"
-
-          # 抓取阶段完成后工作树已干净；同步并处理短暂的远端提交竞争。
+          git commit -m "vps789: update results and latest log"
           for attempt in 1 2 3; do
-            git fetch origin "${TARGET_BRANCH}"
-            git rebase "origin/${TARGET_BRANCH}"
-            if git push origin "HEAD:${TARGET_BRANCH}"; then
+            if ! git fetch origin "$TARGET_BRANCH"; then
+              echo "获取远端分支失败，第 ${attempt}/3 次。" >&2
+            elif ! git rebase "origin/$TARGET_BRANCH"; then
+              git rebase --abort || true
+              echo '同步远端提交时发生冲突，停止推送。' >&2
+              exit 1
+            elif git push origin "HEAD:$TARGET_BRANCH"; then
               exit 0
+            else
+              echo "推送失败，第 ${attempt}/3 次。" >&2
             fi
+            sleep "$((attempt * 2))"
           done
-
-          echo "推送在 3 次尝试后仍失败。" >&2
+          echo '推送在 3 次尝试后仍失败。' >&2
           exit 1
