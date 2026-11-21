@@ -102,6 +102,10 @@ jobs:
           fi
           smoke_test
 
+      - name: 离线回归测试 VPS789 分页等待逻辑
+        working-directory: vps789
+        run: python -B -m unittest discover -s tests -v
+
       - name: 抓取并生成六端口文件、all.txt 和最新日志
         id: scrape
         working-directory: vps789
