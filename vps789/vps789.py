@@ -40,6 +40,11 @@ PORTS = (443, 8443, 2053, 2083, 2087, 2096)
 NAVIGATION_TIMEOUT_MS = 60_000
 TABLE_TIMEOUT_MS = 30_000
 PAGINATION_TIMEOUT_MS = 30_000
+# A changed page number is not proof that Element/Vue has repainted the table.
+# Require the complete host sequence to remain stable before reading a page.
+TABLE_STABLE_SECONDS = 1.0
+TABLE_STABLE_POLL_SECONDS = 0.20
+TABLE_STABLE_MIN_SAMPLES = 4
 RETRY_COUNT = 3
 API_RETRY_COUNT = 3
 USER_AGENT = (
@@ -452,22 +457,151 @@ def inspect_pagination_state(page: Page) -> tuple[bool, bool, str]:
     return False, False, "未取得分页状态"
 
 
+def row_host_signature(rows: Locator) -> tuple[str, ...]:
+    """读取整页所有行的域名列，作为页面内容指纹，而非只抽样首尾几行。"""
+    try:
+        values = rows.evaluate_all(
+            "elements => elements.map(row => { "
+            "const cell = row.querySelector('.table-file-name') || row.querySelector('td'); "
+            "return cell ? (cell.innerText || cell.textContent || '') : ''; })"
+        )
+        return tuple(clean_text(str(value or "")) for value in values)
+    except Exception:
+        # 兼容少数无法执行 evaluate_all 的 Locator；慢速逐行读取只作回退。
+        values: list[str] = []
+        for index in range(rows.count()):
+            row = rows.nth(index)
+            host_cell = row.locator(".table-file-name").first
+            if host_cell.count():
+                values.append(clean_text(host_cell.inner_text()))
+                continue
+            cell = row.locator("td").first
+            values.append(clean_text(cell.inner_text()) if cell.count() else "")
+        return tuple(values)
+
+
+def table_loading_visible(page: Page) -> bool:
+    """检查表格区域是否仍有可见的 Element loading 遮罩。"""
+    script = r"""() => Array.from(document.querySelectorAll('.el-table .el-loading-mask')).some(el => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden'
+        && Number(style.opacity || '1') > 0.01 && rect.width > 0 && rect.height > 0;
+    })"""
+    try:
+        return bool(page.evaluate(script))
+    except Exception:
+        # DOM 状态无法检查时宁可继续等待到超时，也不把未知状态当作已加载。
+        return True
+
+
+def parse_page_number(marker: str) -> int | None:
+    match = re.fullmatch(r"\s*(\d+)\s*", clean_text(marker))
+    return int(match.group(1)) if match else None
+
+
+def pagination_total_count(page: Page) -> int | None:
+    """读取 Element 分页组件的总记录数，例如“共 669 条”。"""
+    locator = page.locator(".el-pagination__total").first
+    try:
+        if locator.count() == 0:
+            return None
+        match = re.search(r"(?<!\d)(\d[\d,]*)", clean_text(locator.inner_text()))
+        return int(match.group(1).replace(",", "")) if match else None
+    except PlaywrightError:
+        return None
+
+
+def expected_page_row_count(total_count: int | None, page_size: int, page_number: int | None) -> int | None:
+    """依据总记录数、第一页实际页容量，计算指定页应有的行数。"""
+    if total_count is None or total_count < 0 or page_size <= 0 or page_number is None or page_number < 1:
+        return None
+    start = (page_number - 1) * page_size
+    if start >= total_count:
+        return 0
+    return min(page_size, total_count - start)
+
+
+def wait_for_stable_table(
+    page: Page,
+    rows: Locator,
+    *,
+    previous_signature: tuple[str, ...] | None,
+    expected_page: int | None,
+    expected_row_count: int | None,
+    timeout_ms: int,
+) -> tuple[str, ...] | None:
+    """等待完整域名序列刷新并稳定；活动页码变化本身绝不视为完成。"""
+    deadline = time.monotonic() + timeout_ms / 1000
+    stable_signature: tuple[str, ...] | None = None
+    stable_since = 0.0
+    stable_samples = 0
+
+    while time.monotonic() < deadline:
+        try:
+            signature = row_host_signature(rows)
+            row_count = rows.count()
+            current_page = parse_page_number(active_page_marker(page))
+            loading = table_loading_visible(page)
+        except PlaywrightError:
+            signature = ()
+            row_count = 0
+            current_page = None
+            loading = True
+
+        now = time.monotonic()
+        page_matches = expected_page is None or current_page == expected_page
+        count_matches = expected_row_count is None or row_count == expected_row_count
+        signature_count_matches = len(signature) == row_count
+        content_changed = previous_signature is None or signature != previous_signature
+
+        ready = (
+            bool(signature)
+            and page_matches
+            and count_matches
+            and signature_count_matches
+            and content_changed
+            and not loading
+        )
+        if not ready:
+            stable_signature = None
+            stable_since = 0.0
+            stable_samples = 0
+        elif signature != stable_signature:
+            stable_signature = signature
+            stable_since = now
+            stable_samples = 1
+        else:
+            stable_samples += 1
+            if (
+                stable_samples >= TABLE_STABLE_MIN_SAMPLES
+                and now - stable_since >= TABLE_STABLE_SECONDS
+            ):
+                return signature
+
+        time.sleep(TABLE_STABLE_POLL_SECONDS)
+
+    return None
+
+
 def wait_for_page_change(
-    page: Page, rows: Locator, old_signature: str, old_page_marker: str, old_url: str = ""
+    page: Page,
+    rows: Locator,
+    old_signature: tuple[str, ...],
+    *,
+    expected_page: int | None = None,
+    expected_row_count: int | None = None,
 ) -> bool:
-    """等待表格、活动页码或 URL 变化；超时返回 False，保留已抓页面。"""
-    deadline = time.monotonic() + PAGINATION_TIMEOUT_MS / 1000
-
-    def changed() -> bool:
-        current_signature = "\x1f".join(row_signature(rows))
-        current_marker = active_page_marker(page)
-        current_url = str(getattr(page, "url", "") or "")
-        rows_changed = bool(current_signature) and current_signature != old_signature
-        page_changed = bool(old_page_marker and current_marker and current_marker != old_page_marker)
-        url_changed = bool(old_url and current_url and current_url != old_url)
-        return rows_changed or page_changed or url_changed
-
-    return wait_until(deadline, changed)
+    """等待目标页码对应的整页数据刷新并稳定；超时保留已抓页面。"""
+    result = wait_for_stable_table(
+        page,
+        rows,
+        previous_signature=old_signature,
+        expected_page=expected_page,
+        expected_row_count=expected_row_count,
+        timeout_ms=PAGINATION_TIMEOUT_MS,
+    )
+    return result is not None
 
 
 def save_page_snapshot(page: Page, diagnostics_dir: Path, page_no: int, suffix: str = "") -> None:
@@ -486,6 +620,31 @@ def save_page_snapshot(page: Page, diagnostics_dir: Path, page_no: int, suffix: 
 def collect_page_domains(page: Page, diagnostics_dir: Path,
                          page_reports: list[dict[str, object]]) -> dict[str, DomainRecord]:
     wait_for_first_data_row(page)
+    initial_rows = find_data_rows(page)
+    initial_page = parse_page_number(active_page_marker(page))
+    initial_signature = wait_for_stable_table(
+        page,
+        initial_rows,
+        previous_signature=None,
+        expected_page=initial_page,
+        expected_row_count=None,
+        timeout_ms=TABLE_TIMEOUT_MS,
+    )
+    if initial_signature is None:
+        raise RuntimeError("第一页表格内容未能稳定；未读取不完整的初始数据。")
+
+    # Page size is taken from the stabilized first page, then used with the
+    # site's total count to validate short final pages (e.g. 669 -> 200/200/200/69).
+    page_size = len(initial_signature)
+    total_count = pagination_total_count(page)
+    if total_count is not None and page_size:
+        total_pages = (total_count + page_size - 1) // page_size
+        last_page_rows = expected_page_row_count(total_count, page_size, total_pages)
+        print(
+            f"[网页] 分页信息：共 {total_count} 条；每页容量 {page_size} 行；"
+            f"预计 {total_pages} 页；末页预计 {last_page_rows} 行。"
+        )
+
     # Deduplicate while scraping so repeated pages do not remain resident in RAM.
     all_records: dict[str, DomainRecord] = {}
     cross_page_duplicates = 0
@@ -616,9 +775,11 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-state-failed")
             break
 
-        old_signature = "\x1f".join(row_signature(rows))
+        old_signature = row_host_signature(rows)
         old_page_marker = active_page_marker(page)
-        old_url = str(getattr(page, "url", "") or "")
+        old_page_number = parse_page_number(old_page_marker)
+        target_page = old_page_number + 1 if old_page_number is not None else None
+        expected_rows = expected_page_row_count(total_count, page_size, target_page)
         try:
             next_button.click()
         except PlaywrightError as exc:
@@ -628,8 +789,23 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
                 page_reports[-1]["pagination_note"] = note
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-click-failed")
             break
-        if not wait_for_page_change(page, rows, old_signature, old_page_marker, old_url):
-            note = "点击下一页后，表格、页码和 URL 在等待期内均未变化；保留已抓取页面并停止后续翻页。"
+        if not wait_for_page_change(
+            page,
+            rows,
+            old_signature,
+            expected_page=target_page,
+            expected_row_count=expected_rows,
+        ):
+            expectation = []
+            if target_page is not None:
+                expectation.append(f"目标页码 {target_page}")
+            if expected_rows is not None:
+                expectation.append(f"预期 {expected_rows} 行")
+            expected_text = "、".join(expectation) if expectation else "目标分页数据"
+            note = (
+                f"点击下一页后，{expected_text}未能在等待期内完成刷新并保持稳定；"
+                "保留已抓取页面并停止后续翻页。"
+            )
             print(f"[网页] {note}")
             if page_reports:
                 page_reports[-1]["pagination_note"] = note
@@ -1131,12 +1307,6 @@ def main() -> int:
 
     print(f"日志已覆盖写入：{log_file}")
     return code
-
-
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 
 
 if __name__ == "__main__":
