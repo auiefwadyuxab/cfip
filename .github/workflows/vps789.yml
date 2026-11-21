@@ -53,7 +53,6 @@ jobs:
             echo 'VPS789 本次运行日志'
             echo "开始时间：$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S %Z')"
             echo '状态：工作流已启动，等待抓取。'
-            echo
           } > vps789/vps789.log
 
       - name: 配置 Python
@@ -150,8 +149,11 @@ jobs:
           cmp -s /tmp/vps789-all-expected.txt all.txt
           test "$(wc -l < all.txt)" -eq "$(( $(wc -l < 443.txt) * 6 ))"
           test -s vps789.log
+          grep -Fq 'VPS789 · 域名抓取运行报告' vps789.log
+          grep -Fq '✓ 抓取完成' vps789.log
+          grep -Fq '运行状态：成功' vps789.log
           echo "✓ all.txt：$(wc -l < all.txt) 条，等于六端口文件直接拼接"
-          echo '✓ vps789.log：本次运行日志已生成并覆盖'
+          echo '✓ vps789.log：已确认本次抓取报告、完成标记及最终成功状态'
 
       - name: 保存 Chromium 浏览器缓存
         if: ${{ steps.playwright-cache.outputs.cache-hit != 'true' }}
