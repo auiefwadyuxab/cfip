@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""订阅聚合：获取 VLESS 订阅，提取并全局去重 HOST:PORT。"""
-
+"""Aggregate four subscription panels; link 3 is the tagged subscription panel."""
 from __future__ import annotations
 
 import base64
 import binascii
 import gzip
+import hashlib
+import io
 import ipaddress
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import unquote, urljoin, urlsplit
 
 import requests
@@ -26,104 +28,53 @@ BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_FILE = BASE_DIR / "sub.txt"
 STATS_FILE = BASE_DIR / "sub_stats.txt"
 
-# 与历史 v2rayNG 抓包保持一致。
 USER_AGENT = "v2rayNG/2.4.0"
 REQUEST_HEADERS = {
     "User-Agent": USER_AGENT,
-    "Connection": "close",
     "Accept-Encoding": "gzip",
 }
-
-FETCH_MAX_ATTEMPTS = max(1, int(os.getenv("SUB_FETCH_MAX_ATTEMPTS", os.getenv("SUB_MAX_ATTEMPTS", "3"))))
-MAX_ROUNDS = min(5, max(1, int(os.getenv("SUB_MAX_ROUNDS", "5"))))
-MIN_SOURCE_ENDPOINTS = 1  # 每个订阅器累计至少一个不同的有效 HOST:PORT 即视为已有正常结果
+MAX_ROUNDS = 5  # 固定上限：最多五轮；符合恢复条件时仍可提前结束。
+# Spool threshold is a RAM-to-disk transition, never a response-size limit.
+SPOOL_MEMORY_THRESHOLD = 2 * 1024 * 1024
+STREAM_CHUNK_BYTES = 256 * 1024
+MIN_SOURCE_ENDPOINTS = 1
 CONNECT_TIMEOUT = max(1.0, float(os.getenv("SUB_CONNECT_TIMEOUT", "20")))
 READ_TIMEOUT = max(1.0, float(os.getenv("SUB_READ_TIMEOUT", "180")))
 RETRY_DELAY = max(0.0, float(os.getenv("SUB_RETRY_DELAY", "5")))
 RETRY_BACKOFF = max(1.0, float(os.getenv("SUB_RETRY_BACKOFF", "2")))
 MAX_REDIRECTS = max(0, int(os.getenv("SUB_MAX_REDIRECTS", "5")))
-
 BLOCKED_ENDPOINTS = {"127.0.0.1:1234"}
-BLOCKED_ENDPOINTS_TEXT = "、".join(sorted(BLOCKED_ENDPOINTS))
 VLESS_PREFIX = "vless://"
 BASE64_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
 HOSTNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
-ENDPOINT_RE = re.compile(
-    r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):([1-9][0-9]{0,4})$"
-)
-
-# 订阅器标签以 bestcf.txt 中的 sub://...#标签 为准。
-BESTCF_SUBSCRIPTIONS_URL = (
-    "https://raw.githubusercontent.com/auiefwadyuxab/cfip/main/bestcf/bestcf.txt"
-)
+ENDPOINT_RE = re.compile(r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):([1-9][0-9]{0,4})$")
+BESTCF_LABELS_FILE = BASE_DIR.parent / "bestcf" / "bestcf.txt"
 DEFAULT_SOURCE_LABELS = (
-    "CM",
-    "Mia",
-    "天诚1",
-    "天诚2",
-    "Moist_R",
-    "洛璃",
-    "辣子鸡",
-    "辣椒炒肉少放辣",
-    "S5公益",
-    "青云志",
-    "老王",
-    "文烨",
-    "Kristi",
-    "周润发",
-    "DanFeng",
+    "CM", "Mia", "天诚1", "天诚2", "Moist_R", "洛璃", "辣子鸡",
+    "辣椒炒肉少放辣", "S5公益", "青云志", "老王", "文烨", "Kristi",
+    "周润发", "DanFeng",
 )
 SOURCE_LABELS = DEFAULT_SOURCE_LABELS
 SOURCE_LABEL_SET = set(SOURCE_LABELS)
 SOURCE_LABEL_REGISTRY_ORIGIN = "内置名单（回退）"
-DEFAULT_SOURCE_LABEL_SET = set(DEFAULT_SOURCE_LABELS)
 SOURCE_TAG_PATTERN = re.compile(r"\[([^\[\]]{1,96})\]")
 SUB_URI_PATTERN = re.compile(r"sub://[^\s\"'<>]+", re.IGNORECASE)
 
 
 @dataclass
-class SubscriptionStats:
+class PanelStats:
     index: int
-    vless_lines: int = 0
-    valid_endpoints: int = 0
+    requested_rounds: int = 0
+    failed_rounds: int = 0
+    raw_lines: int = 0
+    valid_lines: int = 0
     invalid_lines: int = 0
-    blocked_endpoints: int = 0
-    duplicate_endpoints: int = 0
-    unique_endpoints: int = 0
-    contributed_endpoints: int = 0
-    sources: dict[str, set[str]] = field(default_factory=dict)
-    source_vless_lines: dict[str, int] = field(default_factory=dict)
-    source_blocked: dict[str, int] = field(default_factory=dict)
-    fetch_attempts: int = 0
-    failed_attempts: int = 0
-    cached_entries_added: int = 0
-    discarded_blocked_lines: int = 0
-    discarded_invalid_lines: int = 0
-    unresolved_sources: list[str] = field(default_factory=list)
-
-    @property
-    def cross_subscription_duplicates(self) -> int:
-        return self.unique_endpoints - self.contributed_endpoints
-
-    @property
-    def recognized_source_union(self) -> set[str]:
-        union: set[str] = set()
-        for endpoints in self.sources.values():
-            union.update(endpoints)
-        return union
-
-    def record_source_line(self, source: str) -> None:
-        if source:
-            self.source_vless_lines[source] = self.source_vless_lines.get(source, 0) + 1
-
-    def record_source_endpoint(self, source: str, endpoint: str) -> None:
-        if source:
-            self.sources.setdefault(source, set()).add(endpoint)
-
-    def record_source_blocked(self, source: str) -> None:
-        if source:
-            self.source_blocked[source] = self.source_blocked.get(source, 0) + 1
+    blocked_lines: int = 0
+    response_duplicates: int = 0
+    cached_duplicates: int = 0
+    cache_added: int = 0
+    elapsed_seconds: float = 0.0
 
 
 def fail(message: str) -> "NoReturn":
@@ -132,54 +83,45 @@ def fail(message: str) -> "NoReturn":
 
 
 def get_subscription_urls() -> list[str]:
-    """读取 Secret SUB；也支持本地命令行参数，一行一个 URL。"""
+    """Read the four URLs in the same order as bestcf's four panel inputs."""
     raw = os.getenv("SUB", "").strip()
     if not raw and len(sys.argv) > 1:
         raw = "\n".join(arg.strip() for arg in sys.argv[1:] if arg.strip())
     if not raw:
         fail("未检测到订阅地址，请配置 GitHub Secret：sub")
-
     urls = [line.strip() for line in raw.splitlines() if line.strip()]
-    if not urls:
-        fail("订阅地址为空")
-
-    for url in urls:
+    if len(urls) != 4:
+        fail(f"Secret sub 应按 bestcf 顺序提供 4 个面板链接，当前读取到 {len(urls)} 个")
+    for index, url in enumerate(urls, 1):
         try:
             parsed = urlsplit(url)
             if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
                 raise ValueError("必须是有效的 HTTP(S) URL")
-            # 提前触发非法端口检查。
             _ = parsed.port
         except ValueError as exc:
-            fail(f"订阅地址格式错误：{redact(str(exc))}")
+            fail(f"第 {index} 个订阅链接格式错误：{redact(str(exc))}")
     return urls
 
 
 def safe_url_label(url: str) -> str:
-    """日志只显示目标主机，不输出路径、查询参数或 token。"""
     try:
-        parsed = urlsplit(url)
-        return parsed.hostname or "未知主机"
+        return urlsplit(url).hostname or "未知主机"
     except ValueError:
         return "未知主机"
 
 
 def host_header_for(url: str) -> str | None:
-    """生成与实际请求目标一致的 HTTP Host 头；IPv6 保留方括号。"""
     try:
         parsed = urlsplit(url)
         if not parsed.hostname:
             return None
         host = parsed.hostname
         try:
-            ip = ipaddress.ip_address(host)
-            if ip.version == 6:
+            if ipaddress.ip_address(host).version == 6:
                 host = f"[{host}]"
         except ValueError:
             pass
-        if parsed.port is not None:
-            return f"{host}:{parsed.port}"
-        return host
+        return f"{host}:{parsed.port}" if parsed.port is not None else host
     except ValueError:
         return None
 
@@ -195,14 +137,12 @@ def build_session() -> requests.Session:
 
 
 def extract_source_labels_from_bestcf(content: str) -> tuple[str, ...]:
-    """逐行提取 bestcf.txt 中的 sub:// 连接，只读取 # 后标签，忽略其余内容。"""
     labels: list[str] = []
     seen: set[str] = set()
     for raw_line in content.splitlines():
         match = SUB_URI_PATTERN.search(raw_line)
         if not match:
             continue
-        # 允许未来每行在链接前后增加说明文字或 Markdown 包装。
         entry = match.group(0).rstrip("),;]}`")
         try:
             parsed = urlsplit(entry)
@@ -211,37 +151,26 @@ def extract_source_labels_from_bestcf(content: str) -> tuple[str, ...]:
         if parsed.scheme.lower() != "sub" or not parsed.netloc:
             continue
         label = unquote(parsed.fragment).strip()
-        if not label or any(ord(char) < 32 or ord(char) == 127 for char in label):
-            continue
-        if label not in seen:
+        if label and not any(ord(char) < 32 or ord(char) == 127 for char in label) and label not in seen:
             labels.append(label)
             seen.add(label)
     return tuple(labels)
 
 
-def load_source_labels(session: requests.Session) -> tuple[str, ...]:
-    """优先从仓库 bestcf.txt 获取标签；网络读取失败时回退到已知 15 个标签。"""
+def load_source_labels() -> tuple[str, ...]:
+    """Use the checked-out bestcf.txt so classification matches this run's repo snapshot."""
     global SOURCE_LABEL_REGISTRY_ORIGIN
     try:
-        with session.get(
-            BESTCF_SUBSCRIPTIONS_URL,
-            headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"},
-            timeout=(10, 20),
-            allow_redirects=True,
-        ) as response:
-            response.raise_for_status()
-            content = response.content.decode("utf-8-sig", errors="strict")
+        content = BESTCF_LABELS_FILE.read_text(encoding="utf-8-sig", errors="strict")
         labels = extract_source_labels_from_bestcf(content)
         if not labels:
-            raise ValueError("bestcf.txt 中没有找到有效的 sub://标签")
-        SOURCE_LABEL_REGISTRY_ORIGIN = "bestcf.txt"
-        print(f"订阅器名单：从 bestcf.txt 提取 {len(labels)} 个 sub:// 标签")
+            raise ValueError("bestcf.txt 中没有找到有效 sub:// 标签")
+        SOURCE_LABEL_REGISTRY_ORIGIN = "仓库本地 bestcf/bestcf.txt"
         return labels
-    except (requests.RequestException, UnicodeError, ValueError, OSError) as exc:
+    except (UnicodeError, ValueError, OSError) as exc:
         SOURCE_LABEL_REGISTRY_ORIGIN = "内置名单（回退）"
         print(
-            "⚠ 无法读取 bestcf.txt，回退到内置的 "
-            f"{len(DEFAULT_SOURCE_LABELS)} 个订阅器标签："
+            f"⚠ 无法读取本地 bestcf/bestcf.txt，使用内置 {len(DEFAULT_SOURCE_LABELS)} 个订阅器标签："
             f"{type(exc).__name__}：{redact(str(exc))}",
             file=sys.stderr,
         )
@@ -249,10 +178,21 @@ def load_source_labels(session: requests.Session) -> tuple[str, ...]:
 
 
 def set_source_labels(labels: tuple[str, ...]) -> None:
-    """设置本轮运行唯一可信的订阅器标签集合。"""
     global SOURCE_LABELS, SOURCE_LABEL_SET
     SOURCE_LABELS = tuple(labels)
     SOURCE_LABEL_SET = set(labels)
+
+
+def source_from_line(line: str) -> str | None:
+    try:
+        fragment = unquote(urlsplit(line.strip()).fragment)
+    except ValueError:
+        return None
+    for match in SOURCE_TAG_PATTERN.finditer(fragment):
+        label = match.group(1).strip()
+        if label in SOURCE_LABEL_SET:
+            return label
+    return None
 
 
 def request_headers_for(url: str) -> dict[str, str]:
@@ -263,80 +203,148 @@ def request_headers_for(url: str) -> dict[str, str]:
     return headers
 
 
-def fetch(
-    url: str,
-    session: requests.Session,
-    max_attempts: int | None = None,
-) -> str:
-    """完整获取单个订阅正文；默认使用全局重试次数，也可指定单次请求。"""
-    attempt_limit = FETCH_MAX_ATTEMPTS if max_attempts is None else max(1, int(max_attempts))
-    last_error: Exception | None = None
+def _new_spool():
+    """Create a spill-to-disk stream: large responses are accepted, not rejected."""
+    return tempfile.SpooledTemporaryFile(max_size=SPOOL_MEMORY_THRESHOLD, mode="w+b")
 
-    for attempt in range(1, attempt_limit + 1):
-        retry_after: str | None = None
+
+def _count_vless_in_spool(spool) -> int:
+    """Validate UTF-8 and count VLESS lines without loading the whole body into RAM."""
+    spool.seek(0)
+    wrapper = io.TextIOWrapper(spool, encoding="utf-8-sig", errors="strict", newline=None)
+    try:
+        return sum(1 for line in wrapper if line.lstrip().lower().startswith(VLESS_PREFIX))
+    finally:
         try:
-            print(f"  获取 {attempt}/{attempt_limit}：{safe_url_label(url)}")
-            current_url = url
+            wrapper.detach()
+        except (ValueError, OSError):
+            pass
+        spool.seek(0)
 
-            for redirect_index in range(MAX_REDIRECTS + 1):
-                headers = request_headers_for(current_url)
-                with session.get(
-                    current_url,
-                    headers=headers,
-                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                    allow_redirects=False,
-                    stream=False,
-                ) as response:
-                    status = response.status_code
-                    location = response.headers.get("Location")
 
-                    if status in {301, 302, 303, 307, 308} and location:
-                        if redirect_index >= MAX_REDIRECTS:
-                            raise ValueError("重定向次数超过上限")
-                        next_url = urljoin(current_url, location)
-                        parsed_next = urlsplit(next_url)
-                        if parsed_next.scheme.lower() not in {"http", "https"} or not parsed_next.hostname:
-                            raise ValueError("重定向目标不是有效 HTTP(S) 地址")
-                        current_url = next_url
-                        continue
+def _decode_base64_spool(source):
+    """Stream Base64 decoding into a spill-to-disk file, retaining only a tiny carry."""
+    decoded = _new_spool()
+    carry = bytearray()
+    whitespace = b" \t\r\n\v\f"
+    source.seek(0)
+    try:
+        while True:
+            chunk = source.read(STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            compact = chunk.translate(None, whitespace).replace(b"-", b"+").replace(b"_", b"/")
+            carry.extend(compact)
+            # Keep the final quartet aside because it may contain Base64 padding.
+            complete = max(0, (len(carry) // 4 - 1) * 4)
+            if complete:
+                decoded.write(base64.b64decode(bytes(carry[:complete]), validate=True))
+                del carry[:complete]
+        if carry:
+            tail = bytes(carry)
+            if len(tail) % 4:
+                tail += b"=" * (4 - len(tail) % 4)
+            decoded.write(base64.b64decode(tail, validate=True))
+        decoded.seek(0)
+        return decoded
+    except Exception:
+        decoded.close()
+        raise
 
-                    if status < 200 or status >= 300:
-                        retry_after = response.headers.get("Retry-After")
-                        raise requests.HTTPError(f"HTTP {status}", response=response)
 
-                    body = response.content  # stream=False：完整读取后才返回
-                    break
-            else:
-                raise ValueError("重定向处理失败")
+def decode_subscription_spool(body):
+    """Return a streaming UTF-8 text reader for plain, gzip or Base64 VLESS data."""
+    payload = body
+    payload.seek(0)
+    if payload.read(2) == b"\x1f\x8b":
+        payload.seek(0)
+        decompressed = _new_spool()
+        try:
+            with gzip.GzipFile(fileobj=payload, mode="rb") as source:
+                shutil.copyfileobj(source, decompressed, length=STREAM_CHUNK_BYTES)
+            decompressed.seek(0)
+        except (EOFError, OSError, zlib.error) as exc:
+            decompressed.close()
+            payload.close()
+            raise ValueError("gzip 响应解压失败或数据不完整") from exc
+        payload.close()
+        payload = decompressed
 
-            if not body:
-                raise ValueError("响应正文为空")
+    try:
+        if _count_vless_in_spool(payload):
+            payload.seek(0)
+            return io.TextIOWrapper(payload, encoding="utf-8-sig", errors="strict", newline=None)
+    except UnicodeDecodeError:
+        # A Base64 response is ASCII; invalid UTF-8 is not a direct VLESS body.
+        pass
 
-            text = decode_subscription_body(body)
-            vless_count = count_vless_lines(text)
-            if vless_count <= 0:
-                raise ValueError("响应已完整读取，但没有发现 VLESS 节点")
+    try:
+        decoded = _decode_base64_spool(payload)
+        if not _count_vless_in_spool(decoded):
+            decoded.close()
+            raise ValueError("Base64 解码成功，但内容没有发现 VLESS 节点")
+        decoded.seek(0)
+        payload.close()
+        return io.TextIOWrapper(decoded, encoding="utf-8-sig", errors="strict", newline=None)
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        payload.close()
+        if isinstance(exc, ValueError) and "没有发现 VLESS" in str(exc):
+            raise
+        raise ValueError("响应既不是明文 VLESS，也不是可识别的 Base64 VLESS") from exc
 
-            print(f"    ✓ 获取成功：{vless_count} 条 VLESS")
-            return text
 
-        except (requests.RequestException, ValueError, UnicodeError, binascii.Error, zlib.error) as exc:
-            last_error = exc
-            print(
-                f"    ! 失败：{type(exc).__name__}：{redact(str(exc))}",
-                file=sys.stderr,
-            )
-            if attempt < attempt_limit:
-                delay = retry_delay(attempt, retry_after)
-                print(f"    ↻ {delay:g} 秒后再次获取", file=sys.stderr)
-                time.sleep(delay)
+def fetch(url: str, session: requests.Session):
+    """Fetch one URL to a spill-to-disk stream; no hard response-size cap."""
+    current_url = url
+    for redirect_index in range(MAX_REDIRECTS + 1):
+        with session.get(
+            current_url,
+            headers=request_headers_for(current_url),
+            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+            allow_redirects=False,
+            stream=True,
+        ) as response:
+            status = response.status_code
+            location = response.headers.get("Location")
+            if status in {301, 302, 303, 307, 308} and location:
+                if redirect_index >= MAX_REDIRECTS:
+                    raise ValueError("重定向次数超过上限")
+                next_url = urljoin(current_url, location)
+                parsed = urlsplit(next_url)
+                if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+                    raise ValueError("重定向目标不是有效 HTTP(S) 地址")
+                current_url = next_url
+                continue
+            if status < 200 or status >= 300:
+                raise requests.HTTPError(f"HTTP {status}", response=response)
 
-    assert last_error is not None
-    raise last_error
+            body = _new_spool()
+            try:
+                for chunk in response.iter_content(chunk_size=STREAM_CHUNK_BYTES):
+                    if chunk:
+                        body.write(chunk)
+                if body.tell() == 0:
+                    raise ValueError("响应正文为空")
+                body.seek(0)
+                return decode_subscription_spool(body)
+            except Exception:
+                body.close()
+                raise
+    raise ValueError("重定向处理失败")
+
+def sleep_full_delay(seconds: float) -> None:
+    """Wait the complete requested delay without passing huge values to one sleep call."""
+    remaining = max(0.0, seconds)
+    while remaining > 0:
+        interval = min(remaining, 3600.0)
+        started = time.monotonic()
+        time.sleep(interval)
+        elapsed = max(interval, time.monotonic() - started)
+        remaining -= elapsed
 
 
 def retry_delay(attempt: int, retry_after: str | None) -> float:
-    """支持 Retry-After 秒数和 HTTP 日期；有效服务端值不再限制为 60 秒。"""
+    """Respect a valid Retry-After value; otherwise use the existing backoff."""
     if retry_after:
         value = retry_after.strip()
         try:
@@ -345,76 +353,54 @@ def retry_delay(attempt: int, retry_after: str | None) -> float:
                 return seconds
         except (ValueError, OverflowError):
             pass
-
         try:
             retry_at = parsedate_to_datetime(value)
             if retry_at.tzinfo is None:
                 retry_at = retry_at.replace(tzinfo=timezone.utc)
-            seconds = (retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
-            if seconds >= 0:
-                return seconds
-            # 时间点已过，立即允许下一次重试。
-            return 0.0
+            return max(0.0, (retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds())
         except (TypeError, ValueError, OverflowError):
             pass
-
     return RETRY_DELAY * (RETRY_BACKOFF ** (attempt - 1))
 
 
-def decode_subscription_body(body: bytes) -> str:
-    """兼容明文 VLESS、Base64 VLESS，以及少数直接返回 gzip 字节的情况。"""
-    payload = body
-    if payload[:2] == b"\x1f\x8b":
-        try:
-            payload = gzip.decompress(payload)
-        except (EOFError, OSError, zlib.error) as exc:
-            raise ValueError("gzip 响应解压失败或数据不完整") from exc
+def decode_subscription_body(body: bytes | bytearray) -> str:
+    """Compatibility helper for tests/tools; production fetch uses streaming spools."""
+    spool = _new_spool()
+    spool.write(body)
+    spool.seek(0)
+    text_stream = decode_subscription_spool(spool)
+    try:
+        return text_stream.read()
+    finally:
+        text_stream.close()
 
-    text = payload.decode("utf-8-sig", errors="strict")
-    if has_vless(text):
-        return text
 
-    compact = re.sub(r"\s+", "", text)
-    if len(compact) < 8 or not BASE64_RE.fullmatch(compact):
-        raise ValueError("响应既不是明文 VLESS，也不是可识别的 Base64 VLESS")
-
-    normalized = compact.replace("-", "+").replace("_", "/")
-    normalized += "=" * ((4 - len(normalized) % 4) % 4)
-    decoded = base64.b64decode(normalized, validate=True)
-    decoded_text = decoded.decode("utf-8-sig", errors="strict")
-    if not has_vless(decoded_text):
-        raise ValueError("Base64 解码成功，但内容没有发现 VLESS")
-    return decoded_text
-
+def iter_subscription_lines(payload):
+    if isinstance(payload, str):
+        yield from io.StringIO(payload)
+    else:
+        yield from payload
 
 def has_vless(text: str) -> bool:
     return count_vless_lines(text) > 0
 
 
 def count_vless_lines(text: str) -> int:
-    return sum(
-        1
-        for line in text.splitlines()
-        if line.lstrip().lower().startswith(VLESS_PREFIX)
-    )
+    return sum(1 for line in text.splitlines() if line.lstrip().lower().startswith(VLESS_PREFIX))
 
 
 def normalize_host(host: str) -> str | None:
     host = host.rstrip(".")
     if not host:
         return None
-
     try:
-        ip = ipaddress.ip_address(host)
-        return ip.compressed
+        return ipaddress.ip_address(host).compressed
     except ValueError:
         pass
-
     try:
         ascii_host = host.encode("idna").decode("ascii")
     except UnicodeError:
         return None
-
     if len(ascii_host) > 253 or not HOSTNAME_RE.fullmatch(ascii_host):
         return None
     labels = ascii_host.split(".")
@@ -424,809 +410,613 @@ def normalize_host(host: str) -> str | None:
 
 
 def extract_host_port(line: str) -> str | None:
-    """只提取 VLESS authority 中的 HOST:PORT；过滤由调用方单独完成。"""
     line = line.strip()
     if not line.lower().startswith(VLESS_PREFIX):
         return None
-
     try:
         parsed = urlsplit(line)
         if parsed.scheme.lower() != "vless" or parsed.hostname is None or parsed.port is None:
             return None
-        port = parsed.port
-        if not 1 <= port <= 65535:
+        if not 1 <= parsed.port <= 65535:
             return None
-
         host = normalize_host(parsed.hostname)
         if host is None:
             return None
-
-        endpoint = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
-        if not ENDPOINT_RE.fullmatch(endpoint):
-            return None
-        return endpoint
+        endpoint = f"[{host}]:{parsed.port}" if ":" in host else f"{host}:{parsed.port}"
+        return endpoint if ENDPOINT_RE.fullmatch(endpoint) else None
     except ValueError:
         return None
-
-
-def endpoint_key(endpoint: str) -> str:
-    host, port = split_endpoint(endpoint)
-    return f"{host.casefold()}:{port}"
 
 
 def split_endpoint(endpoint: str) -> tuple[str, int]:
     if endpoint.startswith("["):
         close = endpoint.find("]:")
-        if close <= 0:
-            raise ValueError("无效 IPv6 endpoint")
-        return endpoint[1:close], int(endpoint[close + 2 :])
-    host, separator, port = endpoint.rpartition(":")
-    if not separator or not host:
-        raise ValueError("无效 endpoint")
+        return endpoint[1:close], int(endpoint[close + 2:])
+    host, _, port = endpoint.rpartition(":")
     return host, int(port)
 
 
-def source_from_line(line: str) -> str | None:
-    """仅匹配 bestcf.txt 的 sub:// 连接 # 后标签，不再猜测未知重复标签。"""
-    try:
-        fragment = unquote(urlsplit(line.strip()).fragment)
-    except ValueError:
-        return None
-
-    for match in SOURCE_TAG_PATTERN.finditer(fragment):
-        label = match.group(1).strip()
-        if label in SOURCE_LABEL_SET:
-            return label
-    return None
+def endpoint_key(endpoint: str) -> str:
+    """extract_host_port already returns canonical host:port, so reuse it as key."""
+    return endpoint
 
 
-def cache_valid_response(
-    text: str,
-    source_cache: dict[str, dict[str, str]],
-    unlabelled_cache: dict[str, str],
-    source_metrics: dict[str, dict[str, int]],
-    unlabelled_metrics: dict[str, int],
-) -> tuple[int, int, int, dict[str | None, dict[str, object]]]:
-    """把本轮有效 HOST:PORT 累积到本次运行内存缓存，并保留异常诊断。
+def make_panel_cache(index: int) -> dict[str, object]:
+    if index == 3:
+        return {
+            "kind": "tagged",
+            "sources": {label: {} for label in SOURCE_LABELS},
+            "unlabelled": {},
+            # Keep a link-level insertion-ordered index so every request does not
+            # rebuild a union of all provider buckets just to count or merge nodes.
+            "link_nodes": {},
+            "cross_bucket_duplicates": 0,
+        }
+    return {"kind": "ordinary", "nodes": {}}
 
-    缓存按订阅器标签 + HOST:PORT 去重。127.0.0.1:1234 和无效地址不入缓存；
-    后续异常响应不会清除先前正常结果。round_metrics 只统计当前这一轮，
-    source_metrics / unlabelled_metrics 则累计整个 sub.py 进程期间的数据。
-    """
+
+def cache_panel_response(index: int, text, cache: dict[str, object], panel_stats: PanelStats,
+                          source_totals: dict[str, dict[str, int]],
+                          unlabelled_totals: dict[str, int]) -> dict[str, object]:
+    """Cache one link response; only link 3 has provider-specific sub-caches."""
+    tagged = index == 3
+    seen_by_bucket: dict[str | None, set[str]] = {}
+    metrics: dict[str | None, dict[str, int]] = {}
+    # Ordinary links have only one bucket, so its per-response set is already
+    # the link-level unique set. Link 3 needs a separate cross-provider set.
+    link_seen: set[str] | None = set() if tagged else None
     added = 0
-    blocked = 0
-    invalid = 0
-    round_metrics: dict[str | None, dict[str, object]] = {}
+    cross_bucket_added = 0
 
-    for line in text.splitlines():
+    for line in iter_subscription_lines(text):
         if not line.lstrip().lower().startswith(VLESS_PREFIX):
             continue
-
-        source = source_from_line(line)
-        round_item = round_metrics.setdefault(
-            source,
-            {"raw": 0, "blocked": 0, "invalid": 0, "endpoints": set()},
-        )
-        round_item["raw"] += 1
-
-        if source:
-            cumulative = source_metrics.setdefault(
-                source, {"raw": 0, "blocked": 0, "invalid": 0}
-            )
-            cumulative["raw"] += 1
-        else:
-            unlabelled_metrics["raw"] += 1
+        source = source_from_line(line) if tagged else None
+        metric = metrics.setdefault(source, {
+            "raw": 0, "valid": 0, "invalid": 0, "blocked": 0,
+            "round_unique": 0, "added": 0, "response_duplicates": 0,
+            "cached_duplicates": 0,
+        })
+        metric["raw"] += 1
+        panel_stats.raw_lines += 1
+        if tagged and source is not None:
+            source_totals[source]["raw"] += 1
+        elif tagged:
+            unlabelled_totals["raw"] += 1
 
         endpoint = extract_host_port(line)
         if endpoint is None:
-            invalid += 1
-            round_item["invalid"] += 1
-            if source:
-                cumulative["invalid"] += 1
-            else:
-                unlabelled_metrics["invalid"] += 1
+            metric["invalid"] += 1
+            panel_stats.invalid_lines += 1
+            if tagged and source is not None:
+                source_totals[source]["invalid"] += 1
+            elif tagged:
+                unlabelled_totals["invalid"] += 1
             continue
-
         if endpoint in BLOCKED_ENDPOINTS:
-            blocked += 1
-            round_item["blocked"] += 1
-            if source:
-                cumulative["blocked"] += 1
-            else:
-                unlabelled_metrics["blocked"] += 1
+            metric["blocked"] += 1
+            panel_stats.blocked_lines += 1
+            if tagged and source is not None:
+                source_totals[source]["blocked"] += 1
+            elif tagged:
+                unlabelled_totals["blocked"] += 1
             continue
 
         key = endpoint_key(endpoint)
-        round_item["endpoints"].add(key)
-        bucket = source_cache.setdefault(source, {}) if source else unlabelled_cache
-        if key not in bucket:
-            bucket[key] = line.strip()
-            added += 1
+        metric["valid"] += 1
+        panel_stats.valid_lines += 1
+        if tagged and source is not None:
+            source_totals[source]["valid"] += 1
+        elif tagged:
+            unlabelled_totals["valid"] += 1
 
-    return added, blocked, invalid, round_metrics
+        bucket_seen = seen_by_bucket.setdefault(source, set())
+        if key in bucket_seen:
+            metric["response_duplicates"] += 1
+            panel_stats.response_duplicates += 1
+            continue
+        bucket_seen.add(key)
+        metric["round_unique"] += 1
+        if link_seen is not None:
+            link_seen.add(key)
 
+        if tagged:
+            bucket = cache["sources"].setdefault(source, {}) if source is not None else cache["unlabelled"]
+            if key in bucket:
+                metric["cached_duplicates"] += 1
+                panel_stats.cached_duplicates += 1
+            else:
+                if key in cache["link_nodes"]:
+                    cross_bucket_added += 1
+                else:
+                    cache["link_nodes"][key] = None
+                bucket[key] = None
+                metric["added"] += 1
+                panel_stats.cache_added += 1
+                added += 1
+        else:
+            bucket = cache["nodes"]
+            if key in bucket:
+                metric["cached_duplicates"] += 1
+                panel_stats.cached_duplicates += 1
+            else:
+                bucket[key] = None
+                metric["added"] += 1
+                panel_stats.cache_added += 1
+                added += 1
 
-def summarize_sources(
-    panel_caches: list[dict[str, dict]],
-) -> dict[str, dict[str, object]]:
-    """跨本次运行的所有面板汇总各订阅器的缓存节点和异常计数。"""
-    summary: dict[str, dict[str, object]] = {}
-
-    for panel in panel_caches:
-        for source, endpoints in panel["sources"].items():
-            item = summary.setdefault(
-                source,
-                {
-                    "endpoints": {},
-                    "raw": 0,
-                    "blocked": 0,
-                    "invalid": 0,
-                },
-            )
-            merged_endpoints = item["endpoints"]
-            for key, line in endpoints.items():
-                merged_endpoints.setdefault(key, line)
-
-        for source, metrics in panel["source_metrics"].items():
-            item = summary.setdefault(
-                source,
-                {
-                    "endpoints": {},
-                    "raw": 0,
-                    "blocked": 0,
-                    "invalid": 0,
-                },
-            )
-            item["raw"] += metrics["raw"]
-            item["blocked"] += metrics["blocked"]
-            item["invalid"] += metrics["invalid"]
-
-    return summary
-
-
-def recovered_sources(
-    panel_caches: list[dict[str, dict]],
-) -> set[str]:
-    """每个订阅器累计至少有一个不同的有效 HOST:PORT 即视为已有正常结果。"""
-    summary = summarize_sources(panel_caches)
+    if tagged:
+        cache["cross_bucket_duplicates"] += cross_bucket_added
     return {
-        source
-        for source, item in summary.items()
-        if len(item["endpoints"]) >= MIN_SOURCE_ENDPOINTS
+        "metrics": metrics,
+        "link_round_unique": len(link_seen) if link_seen is not None else len(seen_by_bucket.get(None, ())),
+        "added": added,
+        "cross_bucket_duplicates_added": cross_bucket_added,
+        "cross_bucket_duplicates": cache.get("cross_bucket_duplicates", 0),
     }
 
 
-def build_cached_panel_text(
-    source_cache: dict[str, dict[str, str]],
-    unlabelled_cache: dict[str, str],
-) -> str:
-    """生成最终面板文本；每个来源缓存内去重，所有有效节点都参与最终输出。"""
-    lines: list[str] = []
-    emitted: set[str] = set()
-
-    # 每个已识别订阅器先在自己的缓存桶内按 HOST:PORT 去重。
-    for source in SOURCE_LABELS:
-        for line in source_cache.get(source, {}).values():
-            if line not in emitted:
-                lines.append(line)
-                emitted.add(line)
-
-    # 兼容标签注册表之外或没有标签的有效 VLESS 节点；同样保留所有有效缓存。
-    for source, bucket in source_cache.items():
-        if source in SOURCE_LABEL_SET:
-            continue
-        for line in bucket.values():
-            if line not in emitted:
-                lines.append(line)
-                emitted.add(line)
-
-    for line in unlabelled_cache.values():
-        if line not in emitted:
-            lines.append(line)
-            emitted.add(line)
-
-    return "\n".join(lines)
+def build_tagged_link_nodes(cache: dict[str, object]) -> dict[str, None]:
+    """Return the already-maintained link-3 union in first-seen order."""
+    return cache["link_nodes"]
 
 
-def describe_round_source(
-    raw_count: int,
-    endpoint_count: int,
-    blocked_count: int,
-    invalid_count: int,
-    cached_count: int,
-) -> tuple[str, str]:
-    """返回本轮状态和累计缓存状态；一个有效节点即可算有正常结果。"""
-    if raw_count == 0:
-        round_status = "本轮未返回（0 条）"
-    elif blocked_count and endpoint_count:
-        round_status = (
-            f"本轮有有效节点，同时发现异常地址 {BLOCKED_ENDPOINTS_TEXT}，"
-            f"过滤 {blocked_count} 条"
-        )
-    elif blocked_count:
-        round_status = f"本轮异常：{BLOCKED_ENDPOINTS_TEXT}，过滤 {blocked_count} 条"
-    elif endpoint_count:
-        round_status = "本轮正常"
-    else:
-        round_status = "异常：没有有效 HOST:PORT"
+def panel_nodes(cache: dict[str, object]) -> dict[str, None]:
+    return build_tagged_link_nodes(cache) if cache["kind"] == "tagged" else cache["nodes"]
 
-    if invalid_count:
-        round_status += f"；无效 HOST:PORT {invalid_count} 条"
 
-    cache_status = (
-        f"累计缓存 {cached_count} 个有效节点（已有正常结果）"
-        if cached_count >= MIN_SOURCE_ENDPOINTS
-        else "累计尚无有效节点缓存"
-    )
-    return round_status, cache_status
-
-def process_texts(
-    texts: Iterable[tuple[str, SubscriptionStats]],
-) -> tuple[list[str], int]:
-    seen: set[str] = set()
-    nodes: list[str] = []
-    total_vless = 0
-
-    for text, stats in texts:
-        local_seen: set[str] = set()
-        for line in text.splitlines():
-            if not line.lstrip().lower().startswith(VLESS_PREFIX):
-                continue
-
-            stats.vless_lines += 1
-            total_vless += 1
-            source = source_from_line(line)
-            if source is not None:
-                stats.record_source_line(source)
-
-            endpoint = extract_host_port(line)
-            if endpoint is None:
-                stats.invalid_lines += 1
-                continue
-            if endpoint in BLOCKED_ENDPOINTS:
-                stats.blocked_endpoints += 1
-                if source is not None:
-                    stats.record_source_blocked(source)
-                continue
-
-            stats.valid_endpoints += 1
-            if source is not None:
-                stats.record_source_endpoint(source, endpoint)
-
-            key = endpoint_key(endpoint)
-            if key in local_seen:
-                stats.duplicate_endpoints += 1
+def merge_all_panels(panel_caches: list[dict[str, object]]) -> tuple[dict[str, None], list[dict[str, int]]]:
+    merged: dict[str, None] = {}
+    summaries: list[dict[str, int]] = []
+    for index, cache in enumerate(panel_caches, 1):
+        local_nodes = panel_nodes(cache)
+        prior_count = len(merged)
+        overlap = 0
+        for endpoint in local_nodes:
+            if endpoint in merged:
+                overlap += 1
             else:
-                local_seen.add(key)
-                stats.unique_endpoints += 1
+                merged[endpoint] = None
+        summaries.append({
+            "index": index,
+            "panel_unique": len(local_nodes),
+            "new_global": len(merged) - prior_count,
+            "overlap": overlap,
+        })
+    return merged, summaries
 
-            if key not in seen:
-                seen.add(key)
-                nodes.append(endpoint)
-                stats.contributed_endpoints += 1
 
-    return nodes, total_vless
+def cache_size(cache: dict[str, object]) -> int:
+    return len(panel_nodes(cache))
 
 
-def validate_nodes(nodes: list[str]) -> None:
+def write_stats_only(stats_content: str) -> None:
+    """Update the run report without touching the previous successful sub.txt."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n", dir=BASE_DIR,
+        prefix=f".{STATS_FILE.name}.", suffix=".tmp", delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(stats_content.rstrip() + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        os.replace(temp_path, STATS_FILE)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_results(nodes, stats_content: str) -> None:
+    """Stream sub.txt to disk and update its run statistics as a recoverable pair."""
     if not nodes:
-        fail("没有获得可用的唯一 HOST:PORT，保留现有 sub.txt")
+        fail("四个面板均未取得有效 HOST:PORT，保留旧 sub.txt")
 
-    keys = [endpoint_key(node) for node in nodes]
-    if len(set(keys)) != len(nodes):
-        fail("内部全局去重校验失败")
+    staged: dict[Path, Path] = {}
+    replaced: list[Path] = []
+    with tempfile.TemporaryDirectory(prefix=".sub-stage-", dir=BASE_DIR) as temp_name:
+        stage_dir = Path(temp_name)
+        backups: dict[Path, Path | None] = {}
+        for destination in (OUTPUT_FILE, STATS_FILE):
+            if destination.exists():
+                backup = stage_dir / f"backup-{destination.name}"
+                shutil.copy2(destination, backup)
+                backups[destination] = backup
+            else:
+                backups[destination] = None
 
-    for node in nodes:
-        if node in BLOCKED_ENDPOINTS:
-            fail(f"过滤校验失败：{node}")
-        if not ENDPOINT_RE.fullmatch(node):
-            fail(f"输出节点格式错误：{node}")
+        output_stage = stage_dir / OUTPUT_FILE.name
+        stats_stage = stage_dir / STATS_FILE.name
+        count = 0
+        # nodes is the insertion-ordered key view of the final merge dictionary;
+        # it is already unique, so do not allocate a second full-size set here.
+        with output_stage.open("w", encoding="utf-8", newline="\n", buffering=1024 * 1024) as handle:
+            for node in nodes:
+                if node in BLOCKED_ENDPOINTS or not ENDPOINT_RE.fullmatch(node):
+                    fail(f"最终输出包含无效或被过滤的 endpoint：{node}")
+                handle.write(node)
+                handle.write("\n")
+                count += 1
+            handle.flush()
+            os.fsync(handle.fileno())
+        if not count:
+            fail("最终合并结果为空，保留旧 sub.txt")
+        with stats_stage.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(stats_content.rstrip() + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
-
-def write_output(nodes: list[str]) -> None:
-    validate_nodes(nodes)
-    payload = "\n".join(nodes) + "\n"
-    tmp = OUTPUT_FILE.with_name(OUTPUT_FILE.name + ".tmp")
-    tmp.write_text(payload, encoding="utf-8", newline="\n")
-    tmp.replace(OUTPUT_FILE)
-
-    written_lines = OUTPUT_FILE.read_text(encoding="utf-8").splitlines()
-    if written_lines != nodes or len(written_lines) != len(nodes):
-        fail("写盘后行数校验失败")
-    if any(not line or line != line.strip() or any(ch.isspace() for ch in line) for line in written_lines):
-        fail("写盘后发现空行或空白字符")
-
-
-def _source_status(raw_count: int, unique_count: int, blocked: int) -> tuple[str, str]:
-    """一个有效节点即可视为正常；过滤异常地址仍会单独计入日志。"""
-    if unique_count >= MIN_SOURCE_ENDPOINTS:
-        return "✓", "正常（至少有一个有效节点）"
-    if blocked:
-        return "⚠", f"异常：{BLOCKED_ENDPOINTS_TEXT}"
-    if raw_count > 0:
-        return "⚠", "异常：没有有效 HOST:PORT"
-    return "✖", "未返回节点"
-
-
-def _format_source_diagnostics(stats: SubscriptionStats) -> list[str]:
-    """按当前 sub:// 订阅名单展示来源；名单新增项单独标记，不猜测节点标签。"""
-    if not stats.source_vless_lines:
-        return []
-
-    raw_total = sum(stats.source_vless_lines.values())
-    unique_union = stats.recognized_source_union
-    normal = 0
-    abnormal = 0
-    missing = 0
-    known_labels = [label for label in SOURCE_LABELS if label in DEFAULT_SOURCE_LABEL_SET]
-    added_labels = [label for label in SOURCE_LABELS if label not in DEFAULT_SOURCE_LABEL_SET]
-    lines = [
-        "  ┌─ 订阅器检测",
-        f"  │ 本轮标签：{len(SOURCE_LABELS)} 个 sub://（来源：{SOURCE_LABEL_REGISTRY_ORIGIN}）",
-    ]
-
-    def append_label(source: str, prefix: str) -> None:
-        nonlocal normal, abnormal, missing
-        raw_count = stats.source_vless_lines.get(source, 0)
-        unique_count = len(stats.sources.get(source, set()))
-        blocked = stats.source_blocked.get(source, 0)
-        icon, note = _source_status(raw_count, unique_count, blocked)
-        if raw_count == 0:
-            missing += 1
-        elif icon == "✓":
-            normal += 1
-        else:
-            abnormal += 1
-
-        if blocked:
-            detail = f"{raw_count} 条 · {unique_count} 个 · {note} · 过滤 {blocked} 条"
-        else:
-            detail = f"{raw_count} 条 · {unique_count} 个 · {note}"
-        lines.append(f"  │ {prefix}{source}：{detail}")
-        if blocked:
-            lines.append(
-                f"  │   ⚠ 曾发现异常地址：{BLOCKED_ENDPOINTS_TEXT}（过滤 {blocked} 条）"
-            )
-
-    for source in known_labels:
-        icon, _ = _source_status(
-            stats.source_vless_lines.get(source, 0),
-            len(stats.sources.get(source, set())),
-            stats.source_blocked.get(source, 0),
-        )
-        append_label(source, f"{icon} ")
-
-    if added_labels:
-        lines.append("  │")
-        lines.append("  │ 新发现订阅器（bestcf.txt 新增 sub:// 标签）")
-        for source in added_labels:
-            append_label(source, "+ ")
-
-    lines.extend(
-        [
-            "  │",
-            f"  │ 合计：{raw_total} 条 VLESS · {len(unique_union)} 个来源唯一 HOST:PORT",
-            f"  │ 状态：正常 {normal} · 异常 {abnormal} · 未返回 {missing}",
-            "  └─ 仅匹配订阅名单中的 sub:// 标签，不参与节点过滤或全局去重",
-        ]
-    )
-    return lines
-
-
-def write_stats(
-    stats_list: list[SubscriptionStats],
-    total_vless: int,
-    total_nodes: int,
-    source_summary: dict[str, dict[str, object]],
-    completed_rounds: int,
-    panel_caches: list[dict[str, object]],
-    round_history: list[dict[str, object]],
-) -> None:
-    """生成本次运行报告，逐轮保留各订阅器结果与异常历史。"""
-    lines = [
-        "╔══════════════════════════════════════════╗",
-        "║             订阅聚合 · 运行统计          ║",
-        "╚══════════════════════════════════════════╝",
-        f"订阅连接：{len(stats_list)}",
-        f"实际抓取轮次：{completed_rounds}/{MAX_ROUNDS}",
-        f"最终缓存 VLESS 行数：{total_vless}",
-        f"最终全局唯一 HOST:PORT：{total_nodes}",
-        "",
-        "逐轮订阅器检测（标签来自 bestcf.txt 中 sub:// 链接 # 后缀）：",
-    ]
-
-    for round_item in round_history:
-        round_number = int(round_item["number"])
-        lines.append(f"【第 {round_number}/{MAX_ROUNDS} 轮】")
-        source_metrics = round_item["sources"]
-        for source in SOURCE_LABELS:
-            metric = source_metrics[source]
-            raw_count = int(metric["raw"])
-            round_unique = int(metric["unique"])
-            blocked_count = int(metric["blocked"])
-            invalid_count = int(metric["invalid"])
-            cached_count = int(metric["cached"])
-            round_status = str(metric["round_status"])
-            cache_status = str(metric["cache_status"])
-
-            detail = (
-                f"  {source}：{raw_count} 条 · 本轮有效唯一 {round_unique} 个 · "
-                f"{round_status} · {cache_status}"
-            )
-            lines.append(detail)
-            if blocked_count:
-                lines.append(
-                    f"    ⚠ 异常地址：{BLOCKED_ENDPOINTS_TEXT}（本轮过滤 {blocked_count} 条）"
-                )
-            if invalid_count:
-                lines.append(f"    ⚠ 无效 HOST:PORT：{invalid_count} 条（未缓存）")
-
-        panel_errors = round_item.get("panel_errors", [])
-        if panel_errors:
-            lines.append("  请求失败的连接：")
-            lines.extend(f"    {error}" for error in panel_errors)
-        lines.append(
-            f"  本轮新增面板缓存条目：{round_item['added']} 个；"
-            f"仍无有效结果的订阅器：{len(round_item['pending_sources'])} 个"
-        )
-        lines.append("")
-
-    lines.extend(
-        [
-            "订阅器累计内存缓存汇总：",
-            f"正常结果判定：每个订阅器累计至少 {MIN_SOURCE_ENDPOINTS} 个不同、有效且非本机的 HOST:PORT，即视为已有正常结果。",
-            f"缓存范围：仅本次 sub.py 运行期间；最多 {MAX_ROUNDS} 轮；不写缓存文件、不跨 GitHub Actions 运行复用。",
-            "合并规则：每轮所有连接都会重新请求；有效结果按订阅器 + HOST:PORT 分桶缓存，后续异常/空结果不覆盖此前缓存；最终所有有效缓存参与合并。",
-            "",
-        ]
-    )
-
-    normal_sources = 0
-    empty_sources = 0
-    for source in SOURCE_LABELS:
-        item = source_summary.get(
-            source,
-            {"endpoints": {}, "raw": 0, "blocked": 0, "invalid": 0},
-        )
-        endpoint_count = len(item["endpoints"])
-        raw_count = int(item["raw"])
-        blocked_count = int(item["blocked"])
-        invalid_count = int(item["invalid"])
-
-        if endpoint_count >= MIN_SOURCE_ENDPOINTS:
-            status = f"正常（已有 {endpoint_count} 个有效节点）"
-            normal_sources += 1
-        else:
-            status = "五轮内未取得有效节点（可能为 0 条、异常地址或无效地址）"
-            empty_sources += 1
-
-        detail = f"  {source}：累计唯一 {endpoint_count} 个 · {status} · 累计原始 {raw_count} 条"
-        if blocked_count:
-            detail += f" · 曾异常：{BLOCKED_ENDPOINTS_TEXT} · 累计过滤 {blocked_count} 条"
-        if invalid_count:
-            detail += f" · 累计无效 HOST:PORT {invalid_count} 条"
-        lines.append(detail)
-
-    lines.append(
-        f"订阅器缓存状态：已有正常结果 {normal_sources} · 仍无有效结果 {empty_sources}"
-    )
-    lines.append("说明：一个有效 HOST:PORT 即算已有正常结果；无有效结果的来源继续重试，最多 5 轮。")
-    lines.append("")
-
-    source_connections = 0
-    for stats, panel in zip(stats_list, panel_caches):
-        has_sources = bool(panel["source_metrics"])
-        title = f"【连接 {stats.index:02d}】订阅器面板" if has_sources else f"【连接 {stats.index:02d}】节点面板"
-        lines.extend(
-            [
-                title,
-                f"  抓取轮次：{stats.fetch_attempts}/{MAX_ROUNDS} · 请求失败：{stats.failed_attempts} 次",
-                f"  新增内存缓存：{stats.cached_entries_added} 个",
-                f"  过滤异常地址：{stats.discarded_blocked_lines} 条 · 无效 HOST:PORT：{stats.discarded_invalid_lines} 条",
-            ]
-        )
-        if has_sources:
-            source_connections += 1
-            source_lines = _format_source_diagnostics(stats)
-            if source_lines:
-                lines.extend(["", *source_lines])
-        unlabelled = panel["unlabelled"]
-        unlabelled_metrics = panel["unlabelled_metrics"]
-        if unlabelled_metrics["raw"] or (not has_sources and stats.failed_attempts):
-            status = "正常（已有有效节点）" if unlabelled else "未取得有效节点"
-            detail = f"  未标注来源：累计原始 {unlabelled_metrics['raw']} 条 · 缓存 {len(unlabelled)} 个 · {status}"
-            if unlabelled_metrics["blocked"]:
-                detail += f" · 曾异常：{BLOCKED_ENDPOINTS_TEXT} · 过滤 {unlabelled_metrics['blocked']} 条"
-            if unlabelled_metrics["invalid"]:
-                detail += f" · 无效 {unlabelled_metrics['invalid']} 条"
-            lines.append(detail)
-        lines.append("")
-
-    if source_connections:
-        lines.insert(7, f"订阅器诊断面板：{source_connections} 个")
-        lines.insert(8, "")
-    else:
-        lines.append("订阅器诊断：最终缓存中没有匹配到 bestcf.txt 的 sub:// 标签。")
-
-    payload = "\n".join(lines).rstrip() + "\n"
-    tmp = STATS_FILE.with_name(STATS_FILE.name + ".tmp")
-    tmp.write_text(payload, encoding="utf-8", newline="\n")
-    tmp.replace(STATS_FILE)
-
-    # 统计文件不得泄露订阅地址或 token。
-    written = STATS_FILE.read_text(encoding="utf-8")
-    if re.search(r"https?://|(?:^|[^A-Za-z])token[=:]", written, re.IGNORECASE):
-        fail("统计文件完整性校验失败：检测到 URL 或 token 字样")
+        staged[OUTPUT_FILE] = output_stage
+        staged[STATS_FILE] = stats_stage
+        expected = {destination: _file_sha256(path) for destination, path in staged.items()}
+        try:
+            for destination, path in staged.items():
+                path.replace(destination)
+                replaced.append(destination)
+            for destination in staged:
+                if _file_sha256(destination) != expected[destination]:
+                    raise OSError(f"{destination.name} 写入后 SHA-256 回读不一致")
+        except Exception as write_error:
+            rollback_errors: list[str] = []
+            for destination in reversed(replaced):
+                backup = backups[destination]
+                try:
+                    if backup is None:
+                        destination.unlink(missing_ok=True)
+                    else:
+                        restore = stage_dir / f"restore-{destination.name}"
+                        shutil.copy2(backup, restore)
+                        restore.replace(destination)
+                except OSError as rollback_error:
+                    rollback_errors.append(f"{destination.name}: {rollback_error}")
+            if rollback_errors:
+                raise OSError(
+                    f"sub 输出失败：{write_error}；回滚失败：{'；'.join(rollback_errors)}"
+                ) from write_error
+            raise
 
 def redact(value: str) -> str:
-    # URL 只用于异常信息时彻底隐藏，避免 Secret/token 落入 Action 日志。
     return re.sub(r"https?://[^\s'\"]+", "<已隐藏URL>", value)
 
 
+def render_stats(
+    urls: list[str],
+    panel_stats: list[PanelStats],
+    panel_caches: list[dict[str, object]],
+    source_totals: dict[str, dict[str, int]],
+    unlabelled_totals: dict[str, int],
+    round_history: list[dict[str, object]],
+    panel_merge: list[dict[str, int]],
+    final_count: int,
+    elapsed_seconds: float = 0.0,
+) -> str:
+    """Build a human-readable report: overview first, details second."""
+    rule = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    recovered = sum(
+        bool(panel_caches[2]["sources"].get(label)) for label in SOURCE_LABELS
+    )
+    pending = round_history[-1]["pending"] if round_history else list(SOURCE_LABELS)
+    if not pending:
+        finish_reason = "已知订阅器全部取得有效缓存，提前结束"
+    elif len(round_history) >= MAX_ROUNDS:
+        finish_reason = f"达到 {MAX_ROUNDS} 轮上限，保留本次已取得的全部有效缓存"
+    else:
+        finish_reason = "运行结束"
+
+    lines = [
+        rule,
+        "SUB 订阅聚合 · 本次运行报告",
+        rule,
+        f"运行时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"运行耗时：{elapsed_seconds:.1f} 秒",
+        f"运行轮次：{len(round_history)}/{MAX_ROUNDS} 轮",
+        f"订阅器恢复：{recovered}/{len(SOURCE_LABELS)} 个已知订阅器",
+        f"最终结果：{final_count:,} 个唯一 HOST:PORT",
+        f"结束原因：{finish_reason}",
+        "",
+        "【一、四个输入面板】",
+        "每轮均按 1 → 2 → 3 → 4 请求；仅第 3 个面板的已知订阅器恢复情况决定是否提前结束。",
+        "缓存只在本次运行内累积，不跨 Actions 运行复用。",
+    ]
+    for item, url in zip(panel_stats, urls):
+        role = "订阅面板（按订阅器分类）" if item.index == 3 else "独立面板（链接内去重）"
+        unique_count = cache_size(panel_caches[item.index - 1])
+        lines.append(
+            f"  面板 {item.index}｜{role}｜{safe_url_label(url)}｜"
+            f"请求 {item.requested_rounds} 次｜失败 {item.failed_rounds} 次｜"
+            f"缓存 {unique_count:,} 条｜耗时 {item.elapsed_seconds:.1f} 秒"
+        )
+
+    lines.extend(["", "【二、逐轮请求明细】"])
+    for round_item in round_history:
+        lines.append(f"● 第 {round_item['round']}/{MAX_ROUNDS} 轮")
+        for index, result in enumerate(round_item["links"], 1):
+            elapsed = float(result.get("elapsed", 0.0))
+            if not result["ok"]:
+                lines.append(
+                    f"  面板 {index}｜失败｜耗时 {elapsed:.1f} 秒｜"
+                    f"{result['error']}｜之前缓存保留"
+                )
+                continue
+            metric = result["metric"]
+            lines.append(
+                f"  面板 {index}｜原始 {metric['raw']:,}｜有效 {metric['valid']:,}｜"
+                f"本轮唯一 {metric['round_unique']:,}｜新增 {metric['added']:,}｜"
+                f"重复 {metric['response_duplicates'] + metric['cached_duplicates']:,}｜"
+                f"无效 {metric['invalid']:,}｜过滤本机 {metric['blocked']:,}｜"
+                f"累计 {metric['cumulative']:,}｜耗时 {elapsed:.1f} 秒"
+            )
+            if index == 3:
+                lines.append("    订阅器｜本轮原始｜本轮唯一｜新增缓存｜累计缓存")
+                for label in SOURCE_LABELS:
+                    provider = result["sources"].get(label, {})
+                    cached = len(panel_caches[2]["sources"].get(label, {}))
+                    lines.append(
+                        f"    {label}｜{provider.get('raw', 0):>6}｜"
+                        f"{provider.get('round_unique', 0):>6}｜"
+                        f"{provider.get('added', 0):>6}｜{cached:>6}"
+                    )
+                unknown = result.get("unlabelled", {})
+                if unknown.get("raw", 0):
+                    lines.append(
+                        f"    未识别标签｜原始 {unknown['raw']}｜"
+                        f"本轮唯一 {unknown['round_unique']}｜新增 {unknown['added']}"
+                    )
+        missing = round_item["pending"]
+        lines.append("  尚未恢复：" + ("、".join(missing) if missing else "无，全部已恢复"))
+        lines.append("")
+
+    lines.extend([rule, "【三、第 3 面板订阅器累计情况】"])
+    for label in SOURCE_LABELS:
+        cached = len(panel_caches[2]["sources"].get(label, {}))
+        metric = source_totals[label]
+        status = "✓ 已恢复" if cached >= MIN_SOURCE_ENDPOINTS else "○ 暂无有效缓存"
+        lines.append(
+            f"  {status}｜{label}｜缓存唯一 {cached:,}｜"
+            f"累计有效 {metric['valid']:,}｜无效 {metric['invalid']:,}｜"
+            f"过滤本机 {metric['blocked']:,}"
+        )
+
+    tagged_cache = panel_caches[2]
+    provider_cache_rows = sum(len(bucket) for bucket in tagged_cache["sources"].values())
+    unlabelled_cache_rows = len(tagged_cache["unlabelled"])
+    link3_unique = len(build_tagged_link_nodes(tagged_cache))
+    lines.extend([
+        f"  分类缓存：{provider_cache_rows + unlabelled_cache_rows:,} 条",
+        f"  第 3 面板合并去重：{link3_unique:,} 个",
+        f"  跨订阅器/未标注重复：{provider_cache_rows + unlabelled_cache_rows - link3_unique:,} 个",
+        f"  未识别标签：原始 {unlabelled_totals['raw']:,}｜有效 {unlabelled_totals['valid']:,}｜"
+        f"无效 {unlabelled_totals['invalid']:,}｜过滤本机 {unlabelled_totals['blocked']:,}｜"
+        f"缓存唯一 {unlabelled_cache_rows:,}",
+        "",
+        rule,
+        "【四、四面板最终合并】",
+    ])
+    for summary in panel_merge:
+        stats = panel_stats[summary["index"] - 1]
+        lines.append(
+            f"  面板 {summary['index']}｜本链接唯一 {summary['panel_unique']:,}｜"
+            f"新增到总表 {summary['new_global']:,}｜与前面面板重复 {summary['overlap']:,}"
+        )
+    lines.extend([
+        "",
+        rule,
+        "【五、最终输出】",
+        f"最终唯一 HOST:PORT：{final_count:,}",
+        "输出文件：sub.txt",
+        "统计文件：sub_stats.txt",
+        "去重顺序：第 1 → 第 2 → 第 3 → 第 4 面板；不设置来源质量优先级。",
+        rule,
+    ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def main() -> int:
-    print("╔" + "═" * 54 + "╗")
-    print("║" + "订阅聚合 · VLESS 节点提取".center(50) + "║")
-    print("╚" + "═" * 54 + "╝")
-    print("目标：多订阅 → VLESS → HOST:PORT → 全局去重")
-    print(f"请求特征：{USER_AGENT} / Connection: close / gzip")
-    print(f"内存缓存重试：最多 {MAX_ROUNDS} 轮（含首轮），每个输入连接每轮请求一次")
-    print("订阅器成功标准：累计至少有一个不同、有效且非本机的 HOST:PORT 即算已有正常结果。")
-    print("缓存规则：所有轮次正常结果持续累积；0 条、127.0.0.1:1234 和无效地址不入缓存；异常历史逐轮记录。")
-    print("订阅器分类：读取 bestcf.txt 中每个 sub:// 链接 # 后面的标签，并匹配 VLESS 节点标签。")
-    print()
-
-    urls = get_subscription_urls()
-    print(f"待处理输入连接：{len(urls)} 个")
-    print()
-
+    run_started = time.monotonic()
+    print("╭────────────────────────────────────────────────────────╮")
+    print("│ SUB · 四面板订阅聚合                                    │")
+    print("╰────────────────────────────────────────────────────────╯")
+    print("面板 1、2、4：各自独立缓存与去重")
+    print("面板 3：按订阅器分类缓存，面板内合并去重")
+    print(f"每轮按 1 → 2 → 3 → 4 请求全部链接；最多 {MAX_ROUNDS} 轮。")
+    try:
+        urls = get_subscription_urls()
+    except SystemExit as exc:
+        try:
+            write_stats_only(
+                "订阅聚合运行报告\n"
+                f"运行时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                "运行结果：未能读取四个面板链接配置。\n"
+                "请检查 GitHub Secret sub 是否仍按 bestcf 的顺序提供四行 URL。\n"
+            )
+        except OSError as log_error:
+            print(f"订阅配置失败，统计日志也无法更新：{log_error}", file=sys.stderr)
+        raise exc
     session = build_session()
-    stats_list = [SubscriptionStats(index=index) for index in range(1, len(urls) + 1)]
+    panel_stats = [PanelStats(index) for index in range(1, 5)]
     panel_caches: list[dict[str, object]] = []
-    pending_sources: list[str] = []
-    pending_panels: list[str] = []
-    completed_rounds = 0
     round_history: list[dict[str, object]] = []
+    source_totals: dict[str, dict[str, int]] = {}
+    unlabelled_totals = {"raw": 0, "valid": 0, "invalid": 0, "blocked": 0}
 
     try:
-        set_source_labels(load_source_labels(session))
-        panel_caches = [
-            {
-                "sources": {source: {} for source in SOURCE_LABELS},
-                "unlabelled": {},
-                "source_metrics": {},
-                "unlabelled_metrics": {"raw": 0, "blocked": 0, "invalid": 0},
-            }
-            for _ in urls
-        ]
+        set_source_labels(load_source_labels())
+        source_totals = {
+            label: {"raw": 0, "valid": 0, "invalid": 0, "blocked": 0}
+            for label in SOURCE_LABELS
+        }
+        panel_caches = [make_panel_cache(index) for index in range(1, 5)]
+
+        print(f"订阅器名单：{len(SOURCE_LABELS)} 个（来源：{SOURCE_LABEL_REGISTRY_ORIGIN}）")
+        for index, url in enumerate(urls, 1):
+            print(f"  连接 {index}：{safe_url_label(url)}" + ("（sub 订阅面板）" if index == 3 else ""))
 
         for round_number in range(1, MAX_ROUNDS + 1):
-            completed_rounds = round_number
-            print(f"╭─ 第 {round_number}/{MAX_ROUNDS} 轮：重新请求全部 {len(urls)} 个输入连接")
-            round_added = 0
-            round_retry_delays: list[float] = []
-            round_panel_errors: list[str] = []
-            round_source_metrics: dict[str | None, dict[str, object]] = {
-                source: {"raw": 0, "blocked": 0, "invalid": 0, "endpoints": set()}
-                for source in SOURCE_LABELS
-            }
-
-            # 每轮都请求所有输入连接。每个响应里的有效节点独立缓存；
-            # 同一订阅器内部按 HOST:PORT 去重，不同订阅器之间先分别保留。
-            for index, (url, stats, panel_cache) in enumerate(
-                zip(urls, stats_list, panel_caches), 1
-            ):
-                stats.fetch_attempts += 1
-                print(f"【连接 {index:02d}/{len(urls):02d}】第 {round_number}/{MAX_ROUNDS} 轮")
+            print(f"\n========== 第 {round_number}/{MAX_ROUNDS} 轮 ==========")
+            link_results: list[dict[str, object]] = []
+            round_retry_after: list[float] = []
+            for index, (url, stats, cache) in enumerate(zip(urls, panel_stats, panel_caches), 1):
+                stats.requested_rounds += 1
+                request_started = time.monotonic()
+                print(f"  ├─ 面板 {index}/4：请求 {safe_url_label(url)}")
+                text_stream = None
                 try:
-                    # 一轮对每个输入连接只发起一次请求，五轮即最多五次（不含 HTTP 重定向）。
-                    text = fetch(url, session, max_attempts=1)
+                    text_stream = fetch(url, session)
                 except Exception as exc:
-                    stats.failed_attempts += 1
+                    stats.failed_rounds += 1
+                    request_elapsed = time.monotonic() - request_started
+                    stats.elapsed_seconds += request_elapsed
                     response = getattr(exc, "response", None)
-                    retry_after = response.headers.get("Retry-After") if response is not None else None
-                    if retry_after:
-                        round_retry_delays.append(retry_delay(round_number, retry_after))
-                    error_text = f"连接 {index:02d}：{type(exc).__name__}：{redact(str(exc))}"
-                    round_panel_errors.append(error_text)
-                    print(
-                        f"  ⚠ 本轮请求未取得有效 VLESS；此前内存缓存保留："
-                        f"{type(exc).__name__}：{redact(str(exc))}",
-                        file=sys.stderr,
-                    )
+                    retry_value = response.headers.get("Retry-After") if response is not None else None
+                    if retry_value:
+                        round_retry_after.append(retry_delay(round_number, retry_value))
+                    message = f"{type(exc).__name__}: {redact(str(exc))}"
+                    print(f"  │ ✗ 请求失败｜{request_elapsed:.1f} 秒｜历史缓存保留：{message}", file=sys.stderr)
+                    link_results.append({"ok": False, "error": message, "elapsed": request_elapsed})
                     continue
 
-                added, blocked, invalid, response_metrics = cache_valid_response(
-                    text,
-                    panel_cache["sources"],
-                    panel_cache["unlabelled"],
-                    panel_cache["source_metrics"],
-                    panel_cache["unlabelled_metrics"],
-                )
-                stats.cached_entries_added += added
-                stats.discarded_blocked_lines += blocked
-                stats.discarded_invalid_lines += invalid
-                round_added += added
-
-                for source, metric in response_metrics.items():
-                    combined = round_source_metrics.setdefault(
-                        source,
-                        {"raw": 0, "blocked": 0, "invalid": 0, "endpoints": set()},
+                try:
+                    result = cache_panel_response(
+                        index, text_stream, cache, stats, source_totals, unlabelled_totals
                     )
-                    combined["raw"] += int(metric["raw"])
-                    combined["blocked"] += int(metric["blocked"])
-                    combined["invalid"] += int(metric["invalid"])
-                    combined["endpoints"].update(metric["endpoints"])
-
-                print(
-                    f"  ✓ 本连接新增缓存 {added} 个；过滤本机地址 {blocked} 条；"
-                    f"无效 HOST:PORT {invalid} 条"
-                )
-
-            # 累计所有面板、所有轮次的各订阅器缓存；不让本轮异常覆盖旧缓存。
-            current_summary = summarize_sources(panel_caches)
-            round_source_report: dict[str, dict[str, object]] = {}
-            for source in SOURCE_LABELS:
-                metric = round_source_metrics[source]
-                raw_count = int(metric["raw"])
-                round_unique = len(metric["endpoints"])
-                blocked_count = int(metric["blocked"])
-                invalid_count = int(metric["invalid"])
-                cached_count = len(current_summary.get(source, {}).get("endpoints", {}))
-                round_status, cache_status = describe_round_source(
-                    raw_count,
-                    round_unique,
-                    blocked_count,
-                    invalid_count,
-                    cached_count,
-                )
-                is_round_normal = (
-                    round_unique >= MIN_SOURCE_ENDPOINTS
-                    and blocked_count == 0
-                )
-                icon = "✓" if is_round_normal else "⚠"
-                print(
-                    f"{icon} 第 {round_number}/{MAX_ROUNDS} 轮 {source}："
-                    f"{raw_count} 条 · 本轮有效唯一 {round_unique} 个 · "
-                    f"{round_status} · {cache_status}"
-                )
-                if blocked_count:
-                    print(
-                        f"    ⚠ 异常地址：{BLOCKED_ENDPOINTS_TEXT}（本轮过滤 {blocked_count} 条；"
-                        f"累计过滤见最终统计）"
-                    )
-                round_source_report[source] = {
-                    "raw": raw_count,
-                    "unique": round_unique,
-                    "blocked": blocked_count,
-                    "invalid": invalid_count,
-                    "cached": cached_count,
-                    "round_status": round_status,
-                    "cache_status": cache_status,
+                finally:
+                    if hasattr(text_stream, "close"):
+                        text_stream.close()
+                request_elapsed = time.monotonic() - request_started
+                stats.elapsed_seconds += request_elapsed
+                metric_by_source = result["metrics"]
+                all_metrics = list(metric_by_source.values())
+                metric = {
+                    "raw": sum(item["raw"] for item in all_metrics),
+                    "valid": sum(item["valid"] for item in all_metrics),
+                    "invalid": sum(item["invalid"] for item in all_metrics),
+                    "blocked": sum(item["blocked"] for item in all_metrics),
+                    "round_unique": result["link_round_unique"],
+                    "added": result["added"],
+                    "response_duplicates": sum(item["response_duplicates"] for item in all_metrics),
+                    "cached_duplicates": sum(item["cached_duplicates"] for item in all_metrics),
+                    "cumulative": cache_size(cache),
+                    "cross_bucket_duplicates": result["cross_bucket_duplicates"],
+                    "elapsed": request_elapsed,
                 }
-
-            recovered = recovered_sources(panel_caches)
-            pending_sources = [source for source in SOURCE_LABELS if source not in recovered]
-
-            # 未标注的节点面板仍沿用原有处理：也参与本轮缓存和补抓判断。
-            pending_panels = []
-            for index, (panel_cache, stats) in enumerate(zip(panel_caches, stats_list), 1):
-                has_labelled_source = bool(panel_cache["source_metrics"])
-                unlabelled_count = len(panel_cache["unlabelled"])
-                unlabelled_raw = panel_cache["unlabelled_metrics"]["raw"]
-                if has_labelled_source and unlabelled_raw == 0:
-                    continue
-                if unlabelled_count >= MIN_SOURCE_ENDPOINTS:
-                    continue
-                if unlabelled_raw > 0 or (not has_labelled_source and stats.failed_attempts > 0):
-                    pending_panels.append(f"连接 {index:02d}")
-
-            round_history.append(
-                {
-                    "number": round_number,
-                    "sources": round_source_report,
-                    "added": round_added,
-                    "pending_sources": list(pending_sources),
-                    "pending_panels": list(pending_panels),
-                    "panel_errors": list(round_panel_errors),
-                }
-            )
-
-            print(
-                f"本轮汇总：已有正常缓存 {len(recovered)}/{len(SOURCE_LABELS)} 个订阅器，"
-                f"本轮新增面板缓存 {round_added} 个。"
-            )
-
-            if not pending_sources and not pending_panels:
                 print(
-                    "✓ 所有订阅器均已至少缓存一个不同的有效 HOST:PORT，"
-                    "提前结束重试。"
+                    f"  ✓ 原始 {metric['raw']}；有效 {metric['valid']}；本轮链接唯一 {metric['round_unique']}；"
+                    f"新增缓存 {metric['added']}；累计 {metric['cumulative']}；"
+                    f"无效 {metric['invalid']}；过滤本机 {metric['blocked']}；用时 {request_elapsed:.1f} 秒"
                 )
+                source_details: dict[str, dict[str, int]] = {}
+                unlabelled: dict[str, int] = {}
+                if index == 3:
+                    for label in SOURCE_LABELS:
+                        item = metric_by_source.get(label, {})
+                        source_details[label] = {
+                            "raw": item.get("raw", 0),
+                            "round_unique": item.get("round_unique", 0),
+                            "added": item.get("added", 0),
+                        }
+                        print(
+                            f"    {label}：原始 {source_details[label]['raw']}；"
+                            f"本轮唯一 {source_details[label]['round_unique']}；"
+                            f"新增 {source_details[label]['added']}；"
+                            f"累计 {len(cache['sources'].get(label, {}))}"
+                        )
+                    unknown = metric_by_source.get(None, {})
+                    unlabelled = {
+                        "raw": unknown.get("raw", 0),
+                        "round_unique": unknown.get("round_unique", 0),
+                        "added": unknown.get("added", 0),
+                    }
+                    if unlabelled["raw"]:
+                        print(f"    未识别标签：原始 {unlabelled['raw']}；本轮唯一 {unlabelled['round_unique']}；新增 {unlabelled['added']}")
+                    if index == 3:
+                        classified_total = sum(len(bucket) for bucket in cache["sources"].values()) + len(cache["unlabelled"])
+                        print(
+                            f"    第 3 链接分类缓存合计 {classified_total} 条；"
+                            f"链接级合并唯一 {metric['cumulative']} 个；"
+                            f"累计跨标签/未标注重复 {metric['cross_bucket_duplicates']} 个"
+                        )
+                link_results.append({"ok": True, "metric": metric, "sources": source_details,
+                                     "unlabelled": unlabelled,
+                                     "cross_bucket_duplicates": metric["cross_bucket_duplicates"]})
+
+            pending = [label for label in SOURCE_LABELS if not panel_caches[2]["sources"].get(label)]
+            round_history.append({"round": round_number, "links": link_results, "pending": pending})
+            print(f"\n第 3 面板订阅器状态：{len(SOURCE_LABELS)-len(pending)}/{len(SOURCE_LABELS)} 已取得有效缓存")
+            if not pending:
+                print("✓ 第 3 面板所有已知订阅器均有有效缓存，提前结束。")
                 break
-
             if round_number < MAX_ROUNDS:
-                if pending_sources:
-                    print("仍未获得有效结果的订阅器：" + "、".join(pending_sources))
-                if pending_panels:
-                    print("仍未获得有效结果的未标注面板：" + "、".join(pending_panels))
-                delay = max(round_retry_delays, default=retry_delay(round_number, None))
-                print(f"↻ {delay:g} 秒后进入下一轮；所有已缓存正常结果继续保留并累积。")
-                if delay > 0:
-                    time.sleep(delay)
+                print("仍未恢复：" + "、".join(pending))
+                delays = round_retry_after
+                delay = max(delays) if delays else retry_delay(round_number, None)
+                print(f"{delay:g} 秒后开始下一轮；下一轮仍会请求全部四个链接。")
+                if delay:
+                    sleep_full_delay(delay)
             else:
-                print(
-                    f"⚠ 已达到最多 {MAX_ROUNDS} 轮；现在合并所有已缓存的有效结果，"
-                    "没有有效结果的来源不会影响其他正常缓存。"
-                )
+                print(f"已完成 {MAX_ROUNDS} 轮；保留所有链接和订阅器已有的有效缓存。")
 
+        nodes, panel_merge = merge_all_panels(panel_caches)
+        elapsed_seconds = time.monotonic() - run_started
+        stats_content = render_stats(
+            urls, panel_stats, panel_caches, source_totals, unlabelled_totals,
+            round_history, panel_merge, len(nodes), elapsed_seconds
+        )
+        if not nodes:
+            write_stats_only(
+                stats_content + "\n运行结果：四个链接均未提供可用节点；本次保留上一次 sub.txt。\n"
+            )
+            fail("四个链接均未取得有效 HOST:PORT，已更新本次统计日志并保留旧 sub.txt")
+        write_results(nodes.keys(), stats_content)
+        print("\n━━━━━━━━━━━━━━━━ 最终合并 ━━━━━━━━━━━━━━━━")
+        for item in panel_merge:
+            print(
+                f"连接 {item['index']}：链接唯一 {item['panel_unique']}；新增全局 {item['new_global']}；"
+                f"与前面链接重复 {item['overlap']}"
+            )
+        print(f"最终唯一 HOST:PORT：{len(nodes):,}")
+        print(f"总耗时：{elapsed_seconds:.1f} 秒")
+        print(f"详细报告：{STATS_FILE}")
+        print("✓ SUB 订阅聚合完成")
+        return 0
+    except Exception as exc:
+        # Unexpected parsing/cache/output errors must replace the previous report too.
+        # Keep the last successful sub.txt untouched; only update the diagnostic report.
+        try:
+            if panel_caches and source_totals:
+                current_nodes, current_merge = merge_all_panels(panel_caches)
+                failure_report = render_stats(
+                    urls, panel_stats, panel_caches, source_totals, unlabelled_totals,
+                    round_history, current_merge, len(current_nodes),
+                    time.monotonic() - run_started,
+                )
+            else:
+                failure_report = (
+                    "SUB 四面板订阅聚合运行报告\n"
+                    f"运行时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                )
+            failure_report += (
+                "\n【运行结果】\n"
+                f"✗ 运行失败：{type(exc).__name__}: {redact(str(exc))}\n"
+                "本次没有完成新的 sub.txt；上一份成功结果保持不变。\n"
+            )
+            write_stats_only(failure_report)
+        except Exception as log_error:
+            print(
+                f"订阅聚合失败，更新 sub_stats.txt 也失败：{type(log_error).__name__}: {log_error}",
+                file=sys.stderr,
+            )
+        print(f"\n✗ SUB 订阅聚合失败：{type(exc).__name__}: {redact(str(exc))}", file=sys.stderr)
+        raise
     finally:
         session.close()
 
-    source_summary = summarize_sources(panel_caches)
-    # 每个面板先对每个订阅器独立去重；之后 process_texts 再进行全局 HOST:PORT 去重。
-    fetched: list[tuple[str, SubscriptionStats]] = []
-    for stats, panel_cache in zip(stats_list, panel_caches):
-        text = build_cached_panel_text(
-            panel_cache["sources"],
-            panel_cache["unlabelled"],
-        )
-        fetched.append((text, stats))
-        stats.unresolved_sources = list(pending_sources)
-
-    nodes, total_vless = process_texts(fetched)
-    if sum(stats.contributed_endpoints for stats in stats_list) != len(nodes):
-        fail("贡献数量与最终全局唯一节点数量不一致")
-    if not nodes:
-        fail(
-            f"最多 {completed_rounds} 轮后仍未获得任何有效 HOST:PORT；"
-            "保留现有 sub.txt，不写入空结果。"
-        )
-
-    write_output(nodes)
-    write_stats(
-        stats_list,
-        total_vless,
-        len(nodes),
-        source_summary,
-        completed_rounds,
-        panel_caches,
-        round_history,
-    )
-
-    print("─" * 56)
-    for stats in stats_list:
-        print(
-            f"连接 {stats.index:02d}：缓存 VLESS {stats.vless_lines} → 有效 {stats.valid_endpoints} "
-            f"→ 唯一 {stats.unique_endpoints} → 前序重复 {stats.cross_subscription_duplicates} "
-            f"→ 最终贡献 {stats.contributed_endpoints}"
-        )
-        print(
-            f"  抓取 {stats.fetch_attempts}/{MAX_ROUNDS} 轮 · 新增缓存 {stats.cached_entries_added} · "
-            f"过滤本机 {stats.discarded_blocked_lines} · 丢弃无效 {stats.discarded_invalid_lines}"
-        )
-    print("─" * 56)
-    print(f"总计抓取轮次：{completed_rounds}/{MAX_ROUNDS}")
-    print(f"缓存 VLESS 行数：{total_vless}")
-    print(f"最终全局唯一节点：{len(nodes)}")
-    print(f"输出文件：{OUTPUT_FILE}")
-    print(f"统计文件：{STATS_FILE}")
-    print("✓ 完整性：输出行数 = 全局唯一 HOST:PORT")
-    print("✓ 过滤：127.0.0.1:1234 及无效 HOST:PORT 不进入输出缓存")
-    print("✓ 缓存：仅本次运行内存；各订阅器分别去重，最终再进行全局去重；逐轮异常保留")
-    if pending_sources:
-        print(
-            "⚠ 最多轮次结束后仍没有获得有效节点的订阅器（其余正常缓存仍已输出）："
-            + "、".join(pending_sources)
-        )
-    if pending_panels:
-        print(
-            "⚠ 最多轮次结束后仍没有获得有效节点的未标注面板（其余正常缓存仍已输出）："
-            + "、".join(pending_panels)
-        )
-    if not pending_sources and not pending_panels:
-        print("✓ 所有来源均至少缓存了一个有效 HOST:PORT")
-    print(f"✓ 订阅器名单：{SOURCE_LABEL_REGISTRY_ORIGIN}（{len(SOURCE_LABELS)} 个标签）")
-    print("═" * 56)
-    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())
