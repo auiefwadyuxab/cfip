@@ -86,12 +86,12 @@ spring.io:443#83ms/0.42-13.6MB/s
 www.dentoncounty.gov:443#86ms/0-13.9MB/s
 ct.hw.090227.xyz:443#99ms/0.42-11.9MB/s
 midjourney.com:443#83ms/0.42-11.9MB/s
-comet57.cf.090227.xyz:443#103ms/3.26-13.6MB/s
+comet57.cf.090227.xyz:443#102ms/2.99-13.6MB/s
 yg12.ygkkk.dpdns.org:443#84ms/0.21-13.9MB/s
 prompt.gzcrtw.com:443#86ms/0-12.1MB/s
 neko.cloudflaree.eu.org:443#111ms/2.01-11.7MB/s
 www.deepl.com:443#85ms/0.21-13.9MB/s
-delta68.cf.090227.xyz:443#100ms/1.88-14.1MB/s
+delta68.cf.090227.xyz:443#99ms/1.74-14.1MB/s
 www.ntu.edu.sg:443#161ms/0.42-11.9MB/s
 cf.130519.xyz:443#84ms/0-14.4MB/s
 egov.uscis.gov:443#90ms/0-14.1MB/s
@@ -122,7 +122,7 @@ www.zendesk.com:443#85ms/0-14.2MB/s
 cdnjs.loli.net:443#185ms/6.6-13MB/s
 db-ip.com:443#181ms/6.94-13.9MB/s
 xbjzcdn.sjzhk.top:443#140ms/5-14.1MB/s
-obsidian.md:443#194ms/6.46-13.6MB/s
+obsidian.md:443#194ms/6.32-13.6MB/s
 virtualcommtraining.verizon.com:443#187ms/7.43-11.6MB/s
 elegantthemes.com:443#168ms/6.74-14.1MB/s
 youxuan.cf.090227.xyz:443#118ms/4.44-13.7MB/s
@@ -176,6 +176,7 @@ pttime.org:443#165ms/7.43-11.8MB/s
 47bt.com:443#206ms/6.11-13.9MB/s
 s.ee:443#194ms/7.85-14MB/s
 assets.bizclikmedia.net:443#182ms/7.57-13.8MB/s
+opencode.ai:443#166ms/9.38-11.9MB/s
 encryptedsni.com:443#191ms/7.29-13MB/s
 hostinger.com:443#167ms/8.68-13.9MB/s
 www.elysee.fr:443#165ms/8.68-13.3MB/s
@@ -187,8 +188,6 @@ challenges.cloudflare.com:443#167ms/7.36-13.9MB/s
 images.chesscomfiles.com:443#163ms/8.54-14.2MB/s
 a.pub.network:443#177ms/9.51-13.2MB/s
 static.elfsight.com:443#200ms/5.83-14MB/s
-warframe.market:443#198ms/7.64-12.9MB/s
-opencode.ai:443#166ms/9.17-11.9MB/s
 visa.com:443#183ms/11.18-13.7MB/s
 v.recipes:443#192ms/9.65-13.9MB/s
 www.hugedomains.com:443#183ms/7.36-12.6MB/s
@@ -198,6 +197,7 @@ test.509666.xyz:443#85ms/0.21-11.7MB/s
 c-power.com.cn:443#180ms/7.43-13.5MB/s
 wallpaperflare.com:443#206ms/7.43-14MB/s
 codexradar.com:443#182ms/6.94-13.5MB/s
+dash.domain.digitalplat.org:443#174ms/7.64-12.9MB/s
 kaspa.stream:443#202ms/7.36-13.9MB/s
 cf.yj250.bond:443#88ms/0.42-12.7MB/s
 cdn1.jwcmdr.top:443#99ms/3.19-11.9MB/s
@@ -223,6 +223,7 @@ appstorrent.ru:443#206ms/8.06-11.9MB/s
 sanctuarywealth.com:443#206ms/7.29-11.6MB/s
 rankmath.com:443#202ms/9.17-13.8MB/s
 www.transgenderdor.org:443#203ms/8.61-14MB/s
+warframe.market:443#198ms/7.92-12.9MB/s
 cfip.1323123.xyz:443#173ms/8.96-14.1MB/s
 cloudflare-ip.mofashi.ltd:443#130ms/0.9-14.1MB/s
 cloudflare.182682.xyz:443#103ms/4.79-13.7MB/s

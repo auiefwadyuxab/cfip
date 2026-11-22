@@ -86,12 +86,12 @@ spring.io:443#83ms/0.42-13.6MB/s
 www.dentoncounty.gov:443#86ms/0-13.9MB/s
 ct.hw.090227.xyz:443#99ms/0.42-11.9MB/s
 midjourney.com:443#83ms/0.42-11.9MB/s
-comet57.cf.090227.xyz:443#103ms/3.26-13.6MB/s
+comet57.cf.090227.xyz:443#102ms/2.99-13.6MB/s
 yg12.ygkkk.dpdns.org:443#84ms/0.21-13.9MB/s
 prompt.gzcrtw.com:443#86ms/0-12.1MB/s
 neko.cloudflaree.eu.org:443#111ms/2.01-11.7MB/s
 www.deepl.com:443#85ms/0.21-13.9MB/s
-delta68.cf.090227.xyz:443#100ms/1.88-14.1MB/s
+delta68.cf.090227.xyz:443#99ms/1.74-14.1MB/s
 www.ntu.edu.sg:443#161ms/0.42-11.9MB/s
 cf.130519.xyz:443#84ms/0-14.4MB/s
 egov.uscis.gov:443#90ms/0-14.1MB/s
@@ -122,7 +122,7 @@ www.zendesk.com:443#85ms/0-14.2MB/s
 cdnjs.loli.net:443#185ms/6.6-13MB/s
 db-ip.com:443#181ms/6.94-13.9MB/s
 xbjzcdn.sjzhk.top:443#140ms/5-14.1MB/s
-obsidian.md:443#194ms/6.46-13.6MB/s
+obsidian.md:443#194ms/6.32-13.6MB/s
 virtualcommtraining.verizon.com:443#187ms/7.43-11.6MB/s
 elegantthemes.com:443#168ms/6.74-14.1MB/s
 youxuan.cf.090227.xyz:443#118ms/4.44-13.7MB/s
@@ -176,6 +176,7 @@ pttime.org:443#165ms/7.43-11.8MB/s
 47bt.com:443#206ms/6.11-13.9MB/s
 s.ee:443#194ms/7.85-14MB/s
 assets.bizclikmedia.net:443#182ms/7.57-13.8MB/s
+opencode.ai:443#166ms/9.38-11.9MB/s
 encryptedsni.com:443#191ms/7.29-13MB/s
 hostinger.com:443#167ms/8.68-13.9MB/s
 www.elysee.fr:443#165ms/8.68-13.3MB/s
@@ -187,8 +188,6 @@ challenges.cloudflare.com:443#167ms/7.36-13.9MB/s
 images.chesscomfiles.com:443#163ms/8.54-14.2MB/s
 a.pub.network:443#177ms/9.51-13.2MB/s
 static.elfsight.com:443#200ms/5.83-14MB/s
-warframe.market:443#198ms/7.64-12.9MB/s
-opencode.ai:443#166ms/9.17-11.9MB/s
 visa.com:443#183ms/11.18-13.7MB/s
 v.recipes:443#192ms/9.65-13.9MB/s
 www.hugedomains.com:443#183ms/7.36-12.6MB/s
@@ -198,6 +197,7 @@ test.509666.xyz:443#85ms/0.21-11.7MB/s
 c-power.com.cn:443#180ms/7.43-13.5MB/s
 wallpaperflare.com:443#206ms/7.43-14MB/s
 codexradar.com:443#182ms/6.94-13.5MB/s
+dash.domain.digitalplat.org:443#174ms/7.64-12.9MB/s
 kaspa.stream:443#202ms/7.36-13.9MB/s
 cf.yj250.bond:443#88ms/0.42-12.7MB/s
 cdn1.jwcmdr.top:443#99ms/3.19-11.9MB/s
@@ -223,6 +223,7 @@ appstorrent.ru:443#206ms/8.06-11.9MB/s
 sanctuarywealth.com:443#206ms/7.29-11.6MB/s
 rankmath.com:443#202ms/9.17-13.8MB/s
 www.transgenderdor.org:443#203ms/8.61-14MB/s
+warframe.market:443#198ms/7.92-12.9MB/s
 cfip.1323123.xyz:443#173ms/8.96-14.1MB/s
 cloudflare-ip.mofashi.ltd:443#130ms/0.9-14.1MB/s
 cloudflare.182682.xyz:443#103ms/4.79-13.7MB/s
@@ -756,12 +757,12 @@ spring.io:8443#83ms/0.42-13.6MB/s
 www.dentoncounty.gov:8443#86ms/0-13.9MB/s
 ct.hw.090227.xyz:8443#99ms/0.42-11.9MB/s
 midjourney.com:8443#83ms/0.42-11.9MB/s
-comet57.cf.090227.xyz:8443#103ms/3.26-13.6MB/s
+comet57.cf.090227.xyz:8443#102ms/2.99-13.6MB/s
 yg12.ygkkk.dpdns.org:8443#84ms/0.21-13.9MB/s
 prompt.gzcrtw.com:8443#86ms/0-12.1MB/s
 neko.cloudflaree.eu.org:8443#111ms/2.01-11.7MB/s
 www.deepl.com:8443#85ms/0.21-13.9MB/s
-delta68.cf.090227.xyz:8443#100ms/1.88-14.1MB/s
+delta68.cf.090227.xyz:8443#99ms/1.74-14.1MB/s
 www.ntu.edu.sg:8443#161ms/0.42-11.9MB/s
 cf.130519.xyz:8443#84ms/0-14.4MB/s
 egov.uscis.gov:8443#90ms/0-14.1MB/s
@@ -792,7 +793,7 @@ www.zendesk.com:8443#85ms/0-14.2MB/s
 cdnjs.loli.net:8443#185ms/6.6-13MB/s
 db-ip.com:8443#181ms/6.94-13.9MB/s
 xbjzcdn.sjzhk.top:8443#140ms/5-14.1MB/s
-obsidian.md:8443#194ms/6.46-13.6MB/s
+obsidian.md:8443#194ms/6.32-13.6MB/s
 virtualcommtraining.verizon.com:8443#187ms/7.43-11.6MB/s
 elegantthemes.com:8443#168ms/6.74-14.1MB/s
 youxuan.cf.090227.xyz:8443#118ms/4.44-13.7MB/s
@@ -846,6 +847,7 @@ pttime.org:8443#165ms/7.43-11.8MB/s
 47bt.com:8443#206ms/6.11-13.9MB/s
 s.ee:8443#194ms/7.85-14MB/s
 assets.bizclikmedia.net:8443#182ms/7.57-13.8MB/s
+opencode.ai:8443#166ms/9.38-11.9MB/s
 encryptedsni.com:8443#191ms/7.29-13MB/s
 hostinger.com:8443#167ms/8.68-13.9MB/s
 www.elysee.fr:8443#165ms/8.68-13.3MB/s
@@ -857,8 +859,6 @@ challenges.cloudflare.com:8443#167ms/7.36-13.9MB/s
 images.chesscomfiles.com:8443#163ms/8.54-14.2MB/s
 a.pub.network:8443#177ms/9.51-13.2MB/s
 static.elfsight.com:8443#200ms/5.83-14MB/s
-warframe.market:8443#198ms/7.64-12.9MB/s
-opencode.ai:8443#166ms/9.17-11.9MB/s
 visa.com:8443#183ms/11.18-13.7MB/s
 v.recipes:8443#192ms/9.65-13.9MB/s
 www.hugedomains.com:8443#183ms/7.36-12.6MB/s
@@ -868,6 +868,7 @@ test.509666.xyz:8443#85ms/0.21-11.7MB/s
 c-power.com.cn:8443#180ms/7.43-13.5MB/s
 wallpaperflare.com:8443#206ms/7.43-14MB/s
 codexradar.com:8443#182ms/6.94-13.5MB/s
+dash.domain.digitalplat.org:8443#174ms/7.64-12.9MB/s
 kaspa.stream:8443#202ms/7.36-13.9MB/s
 cf.yj250.bond:8443#88ms/0.42-12.7MB/s
 cdn1.jwcmdr.top:8443#99ms/3.19-11.9MB/s
@@ -893,6 +894,7 @@ appstorrent.ru:8443#206ms/8.06-11.9MB/s
 sanctuarywealth.com:8443#206ms/7.29-11.6MB/s
 rankmath.com:8443#202ms/9.17-13.8MB/s
 www.transgenderdor.org:8443#203ms/8.61-14MB/s
+warframe.market:8443#198ms/7.92-12.9MB/s
 cfip.1323123.xyz:8443#173ms/8.96-14.1MB/s
 cloudflare-ip.mofashi.ltd:8443#130ms/0.9-14.1MB/s
 cloudflare.182682.xyz:8443#103ms/4.79-13.7MB/s
@@ -1426,12 +1428,12 @@ spring.io:2053#83ms/0.42-13.6MB/s
 www.dentoncounty.gov:2053#86ms/0-13.9MB/s
 ct.hw.090227.xyz:2053#99ms/0.42-11.9MB/s
 midjourney.com:2053#83ms/0.42-11.9MB/s
-comet57.cf.090227.xyz:2053#103ms/3.26-13.6MB/s
+comet57.cf.090227.xyz:2053#102ms/2.99-13.6MB/s
 yg12.ygkkk.dpdns.org:2053#84ms/0.21-13.9MB/s
 prompt.gzcrtw.com:2053#86ms/0-12.1MB/s
 neko.cloudflaree.eu.org:2053#111ms/2.01-11.7MB/s
 www.deepl.com:2053#85ms/0.21-13.9MB/s
-delta68.cf.090227.xyz:2053#100ms/1.88-14.1MB/s
+delta68.cf.090227.xyz:2053#99ms/1.74-14.1MB/s
 www.ntu.edu.sg:2053#161ms/0.42-11.9MB/s
 cf.130519.xyz:2053#84ms/0-14.4MB/s
 egov.uscis.gov:2053#90ms/0-14.1MB/s
@@ -1462,7 +1464,7 @@ www.zendesk.com:2053#85ms/0-14.2MB/s
 cdnjs.loli.net:2053#185ms/6.6-13MB/s
 db-ip.com:2053#181ms/6.94-13.9MB/s
 xbjzcdn.sjzhk.top:2053#140ms/5-14.1MB/s
-obsidian.md:2053#194ms/6.46-13.6MB/s
+obsidian.md:2053#194ms/6.32-13.6MB/s
 virtualcommtraining.verizon.com:2053#187ms/7.43-11.6MB/s
 elegantthemes.com:2053#168ms/6.74-14.1MB/s
 youxuan.cf.090227.xyz:2053#118ms/4.44-13.7MB/s
@@ -1516,6 +1518,7 @@ pttime.org:2053#165ms/7.43-11.8MB/s
 47bt.com:2053#206ms/6.11-13.9MB/s
 s.ee:2053#194ms/7.85-14MB/s
 assets.bizclikmedia.net:2053#182ms/7.57-13.8MB/s
+opencode.ai:2053#166ms/9.38-11.9MB/s
 encryptedsni.com:2053#191ms/7.29-13MB/s
 hostinger.com:2053#167ms/8.68-13.9MB/s
 www.elysee.fr:2053#165ms/8.68-13.3MB/s
@@ -1527,8 +1530,6 @@ challenges.cloudflare.com:2053#167ms/7.36-13.9MB/s
 images.chesscomfiles.com:2053#163ms/8.54-14.2MB/s
 a.pub.network:2053#177ms/9.51-13.2MB/s
 static.elfsight.com:2053#200ms/5.83-14MB/s
-warframe.market:2053#198ms/7.64-12.9MB/s
-opencode.ai:2053#166ms/9.17-11.9MB/s
 visa.com:2053#183ms/11.18-13.7MB/s
 v.recipes:2053#192ms/9.65-13.9MB/s
 www.hugedomains.com:2053#183ms/7.36-12.6MB/s
@@ -1538,6 +1539,7 @@ test.509666.xyz:2053#85ms/0.21-11.7MB/s
 c-power.com.cn:2053#180ms/7.43-13.5MB/s
 wallpaperflare.com:2053#206ms/7.43-14MB/s
 codexradar.com:2053#182ms/6.94-13.5MB/s
+dash.domain.digitalplat.org:2053#174ms/7.64-12.9MB/s
 kaspa.stream:2053#202ms/7.36-13.9MB/s
 cf.yj250.bond:2053#88ms/0.42-12.7MB/s
 cdn1.jwcmdr.top:2053#99ms/3.19-11.9MB/s
@@ -1563,6 +1565,7 @@ appstorrent.ru:2053#206ms/8.06-11.9MB/s
 sanctuarywealth.com:2053#206ms/7.29-11.6MB/s
 rankmath.com:2053#202ms/9.17-13.8MB/s
 www.transgenderdor.org:2053#203ms/8.61-14MB/s
+warframe.market:2053#198ms/7.92-12.9MB/s
 cfip.1323123.xyz:2053#173ms/8.96-14.1MB/s
 cloudflare-ip.mofashi.ltd:2053#130ms/0.9-14.1MB/s
 cloudflare.182682.xyz:2053#103ms/4.79-13.7MB/s
@@ -2096,12 +2099,12 @@ spring.io:2083#83ms/0.42-13.6MB/s
 www.dentoncounty.gov:2083#86ms/0-13.9MB/s
 ct.hw.090227.xyz:2083#99ms/0.42-11.9MB/s
 midjourney.com:2083#83ms/0.42-11.9MB/s
-comet57.cf.090227.xyz:2083#103ms/3.26-13.6MB/s
+comet57.cf.090227.xyz:2083#102ms/2.99-13.6MB/s
 yg12.ygkkk.dpdns.org:2083#84ms/0.21-13.9MB/s
 prompt.gzcrtw.com:2083#86ms/0-12.1MB/s
 neko.cloudflaree.eu.org:2083#111ms/2.01-11.7MB/s
 www.deepl.com:2083#85ms/0.21-13.9MB/s
-delta68.cf.090227.xyz:2083#100ms/1.88-14.1MB/s
+delta68.cf.090227.xyz:2083#99ms/1.74-14.1MB/s
 www.ntu.edu.sg:2083#161ms/0.42-11.9MB/s
 cf.130519.xyz:2083#84ms/0-14.4MB/s
 egov.uscis.gov:2083#90ms/0-14.1MB/s
@@ -2132,7 +2135,7 @@ www.zendesk.com:2083#85ms/0-14.2MB/s
 cdnjs.loli.net:2083#185ms/6.6-13MB/s
 db-ip.com:2083#181ms/6.94-13.9MB/s
 xbjzcdn.sjzhk.top:2083#140ms/5-14.1MB/s
-obsidian.md:2083#194ms/6.46-13.6MB/s
+obsidian.md:2083#194ms/6.32-13.6MB/s
 virtualcommtraining.verizon.com:2083#187ms/7.43-11.6MB/s
 elegantthemes.com:2083#168ms/6.74-14.1MB/s
 youxuan.cf.090227.xyz:2083#118ms/4.44-13.7MB/s
@@ -2186,6 +2189,7 @@ pttime.org:2083#165ms/7.43-11.8MB/s
 47bt.com:2083#206ms/6.11-13.9MB/s
 s.ee:2083#194ms/7.85-14MB/s
 assets.bizclikmedia.net:2083#182ms/7.57-13.8MB/s
+opencode.ai:2083#166ms/9.38-11.9MB/s
 encryptedsni.com:2083#191ms/7.29-13MB/s
 hostinger.com:2083#167ms/8.68-13.9MB/s
 www.elysee.fr:2083#165ms/8.68-13.3MB/s
@@ -2197,8 +2201,6 @@ challenges.cloudflare.com:2083#167ms/7.36-13.9MB/s
 images.chesscomfiles.com:2083#163ms/8.54-14.2MB/s
 a.pub.network:2083#177ms/9.51-13.2MB/s
 static.elfsight.com:2083#200ms/5.83-14MB/s
-warframe.market:2083#198ms/7.64-12.9MB/s
-opencode.ai:2083#166ms/9.17-11.9MB/s
 visa.com:2083#183ms/11.18-13.7MB/s
 v.recipes:2083#192ms/9.65-13.9MB/s
 www.hugedomains.com:2083#183ms/7.36-12.6MB/s
@@ -2208,6 +2210,7 @@ test.509666.xyz:2083#85ms/0.21-11.7MB/s
 c-power.com.cn:2083#180ms/7.43-13.5MB/s
 wallpaperflare.com:2083#206ms/7.43-14MB/s
 codexradar.com:2083#182ms/6.94-13.5MB/s
+dash.domain.digitalplat.org:2083#174ms/7.64-12.9MB/s
 kaspa.stream:2083#202ms/7.36-13.9MB/s
 cf.yj250.bond:2083#88ms/0.42-12.7MB/s
 cdn1.jwcmdr.top:2083#99ms/3.19-11.9MB/s
@@ -2233,6 +2236,7 @@ appstorrent.ru:2083#206ms/8.06-11.9MB/s
 sanctuarywealth.com:2083#206ms/7.29-11.6MB/s
 rankmath.com:2083#202ms/9.17-13.8MB/s
 www.transgenderdor.org:2083#203ms/8.61-14MB/s
+warframe.market:2083#198ms/7.92-12.9MB/s
 cfip.1323123.xyz:2083#173ms/8.96-14.1MB/s
 cloudflare-ip.mofashi.ltd:2083#130ms/0.9-14.1MB/s
 cloudflare.182682.xyz:2083#103ms/4.79-13.7MB/s
@@ -2766,12 +2770,12 @@ spring.io:2087#83ms/0.42-13.6MB/s
 www.dentoncounty.gov:2087#86ms/0-13.9MB/s
 ct.hw.090227.xyz:2087#99ms/0.42-11.9MB/s
 midjourney.com:2087#83ms/0.42-11.9MB/s
-comet57.cf.090227.xyz:2087#103ms/3.26-13.6MB/s
+comet57.cf.090227.xyz:2087#102ms/2.99-13.6MB/s
 yg12.ygkkk.dpdns.org:2087#84ms/0.21-13.9MB/s
 prompt.gzcrtw.com:2087#86ms/0-12.1MB/s
 neko.cloudflaree.eu.org:2087#111ms/2.01-11.7MB/s
 www.deepl.com:2087#85ms/0.21-13.9MB/s
-delta68.cf.090227.xyz:2087#100ms/1.88-14.1MB/s
+delta68.cf.090227.xyz:2087#99ms/1.74-14.1MB/s
 www.ntu.edu.sg:2087#161ms/0.42-11.9MB/s
 cf.130519.xyz:2087#84ms/0-14.4MB/s
 egov.uscis.gov:2087#90ms/0-14.1MB/s
@@ -2802,7 +2806,7 @@ www.zendesk.com:2087#85ms/0-14.2MB/s
 cdnjs.loli.net:2087#185ms/6.6-13MB/s
 db-ip.com:2087#181ms/6.94-13.9MB/s
 xbjzcdn.sjzhk.top:2087#140ms/5-14.1MB/s
-obsidian.md:2087#194ms/6.46-13.6MB/s
+obsidian.md:2087#194ms/6.32-13.6MB/s
 virtualcommtraining.verizon.com:2087#187ms/7.43-11.6MB/s
 elegantthemes.com:2087#168ms/6.74-14.1MB/s
 youxuan.cf.090227.xyz:2087#118ms/4.44-13.7MB/s
@@ -2856,6 +2860,7 @@ pttime.org:2087#165ms/7.43-11.8MB/s
 47bt.com:2087#206ms/6.11-13.9MB/s
 s.ee:2087#194ms/7.85-14MB/s
 assets.bizclikmedia.net:2087#182ms/7.57-13.8MB/s
+opencode.ai:2087#166ms/9.38-11.9MB/s
 encryptedsni.com:2087#191ms/7.29-13MB/s
 hostinger.com:2087#167ms/8.68-13.9MB/s
 www.elysee.fr:2087#165ms/8.68-13.3MB/s
@@ -2867,8 +2872,6 @@ challenges.cloudflare.com:2087#167ms/7.36-13.9MB/s
 images.chesscomfiles.com:2087#163ms/8.54-14.2MB/s
 a.pub.network:2087#177ms/9.51-13.2MB/s
 static.elfsight.com:2087#200ms/5.83-14MB/s
-warframe.market:2087#198ms/7.64-12.9MB/s
-opencode.ai:2087#166ms/9.17-11.9MB/s
 visa.com:2087#183ms/11.18-13.7MB/s
 v.recipes:2087#192ms/9.65-13.9MB/s
 www.hugedomains.com:2087#183ms/7.36-12.6MB/s
@@ -2878,6 +2881,7 @@ test.509666.xyz:2087#85ms/0.21-11.7MB/s
 c-power.com.cn:2087#180ms/7.43-13.5MB/s
 wallpaperflare.com:2087#206ms/7.43-14MB/s
 codexradar.com:2087#182ms/6.94-13.5MB/s
+dash.domain.digitalplat.org:2087#174ms/7.64-12.9MB/s
 kaspa.stream:2087#202ms/7.36-13.9MB/s
 cf.yj250.bond:2087#88ms/0.42-12.7MB/s
 cdn1.jwcmdr.top:2087#99ms/3.19-11.9MB/s
@@ -2903,6 +2907,7 @@ appstorrent.ru:2087#206ms/8.06-11.9MB/s
 sanctuarywealth.com:2087#206ms/7.29-11.6MB/s
 rankmath.com:2087#202ms/9.17-13.8MB/s
 www.transgenderdor.org:2087#203ms/8.61-14MB/s
+warframe.market:2087#198ms/7.92-12.9MB/s
 cfip.1323123.xyz:2087#173ms/8.96-14.1MB/s
 cloudflare-ip.mofashi.ltd:2087#130ms/0.9-14.1MB/s
 cloudflare.182682.xyz:2087#103ms/4.79-13.7MB/s
@@ -3436,12 +3441,12 @@ spring.io:2096#83ms/0.42-13.6MB/s
 www.dentoncounty.gov:2096#86ms/0-13.9MB/s
 ct.hw.090227.xyz:2096#99ms/0.42-11.9MB/s
 midjourney.com:2096#83ms/0.42-11.9MB/s
-comet57.cf.090227.xyz:2096#103ms/3.26-13.6MB/s
+comet57.cf.090227.xyz:2096#102ms/2.99-13.6MB/s
 yg12.ygkkk.dpdns.org:2096#84ms/0.21-13.9MB/s
 prompt.gzcrtw.com:2096#86ms/0-12.1MB/s
 neko.cloudflaree.eu.org:2096#111ms/2.01-11.7MB/s
 www.deepl.com:2096#85ms/0.21-13.9MB/s
-delta68.cf.090227.xyz:2096#100ms/1.88-14.1MB/s
+delta68.cf.090227.xyz:2096#99ms/1.74-14.1MB/s
 www.ntu.edu.sg:2096#161ms/0.42-11.9MB/s
 cf.130519.xyz:2096#84ms/0-14.4MB/s
 egov.uscis.gov:2096#90ms/0-14.1MB/s
@@ -3472,7 +3477,7 @@ www.zendesk.com:2096#85ms/0-14.2MB/s
 cdnjs.loli.net:2096#185ms/6.6-13MB/s
 db-ip.com:2096#181ms/6.94-13.9MB/s
 xbjzcdn.sjzhk.top:2096#140ms/5-14.1MB/s
-obsidian.md:2096#194ms/6.46-13.6MB/s
+obsidian.md:2096#194ms/6.32-13.6MB/s
 virtualcommtraining.verizon.com:2096#187ms/7.43-11.6MB/s
 elegantthemes.com:2096#168ms/6.74-14.1MB/s
 youxuan.cf.090227.xyz:2096#118ms/4.44-13.7MB/s
@@ -3526,6 +3531,7 @@ pttime.org:2096#165ms/7.43-11.8MB/s
 47bt.com:2096#206ms/6.11-13.9MB/s
 s.ee:2096#194ms/7.85-14MB/s
 assets.bizclikmedia.net:2096#182ms/7.57-13.8MB/s
+opencode.ai:2096#166ms/9.38-11.9MB/s
 encryptedsni.com:2096#191ms/7.29-13MB/s
 hostinger.com:2096#167ms/8.68-13.9MB/s
 www.elysee.fr:2096#165ms/8.68-13.3MB/s
@@ -3537,8 +3543,6 @@ challenges.cloudflare.com:2096#167ms/7.36-13.9MB/s
 images.chesscomfiles.com:2096#163ms/8.54-14.2MB/s
 a.pub.network:2096#177ms/9.51-13.2MB/s
 static.elfsight.com:2096#200ms/5.83-14MB/s
-warframe.market:2096#198ms/7.64-12.9MB/s
-opencode.ai:2096#166ms/9.17-11.9MB/s
 visa.com:2096#183ms/11.18-13.7MB/s
 v.recipes:2096#192ms/9.65-13.9MB/s
 www.hugedomains.com:2096#183ms/7.36-12.6MB/s
@@ -3548,6 +3552,7 @@ test.509666.xyz:2096#85ms/0.21-11.7MB/s
 c-power.com.cn:2096#180ms/7.43-13.5MB/s
 wallpaperflare.com:2096#206ms/7.43-14MB/s
 codexradar.com:2096#182ms/6.94-13.5MB/s
+dash.domain.digitalplat.org:2096#174ms/7.64-12.9MB/s
 kaspa.stream:2096#202ms/7.36-13.9MB/s
 cf.yj250.bond:2096#88ms/0.42-12.7MB/s
 cdn1.jwcmdr.top:2096#99ms/3.19-11.9MB/s
@@ -3573,6 +3578,7 @@ appstorrent.ru:2096#206ms/8.06-11.9MB/s
 sanctuarywealth.com:2096#206ms/7.29-11.6MB/s
 rankmath.com:2096#202ms/9.17-13.8MB/s
 www.transgenderdor.org:2096#203ms/8.61-14MB/s
+warframe.market:2096#198ms/7.92-12.9MB/s
 cfip.1323123.xyz:2096#173ms/8.96-14.1MB/s
 cloudflare-ip.mofashi.ltd:2096#130ms/0.9-14.1MB/s
 cloudflare.182682.xyz:2096#103ms/4.79-13.7MB/s
