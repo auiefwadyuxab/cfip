@@ -14,11 +14,13 @@ import shutil
 import sys
 import tempfile
 import time
+import unicodedata
 import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from typing import NoReturn
 from zoneinfo import ZoneInfo
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -32,10 +34,11 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 USER_AGENT = "v2rayNG/2.4.0"
 REQUEST_HEADERS = {
-    "User-Agent": USER_AGENT,
+    "User-agent": USER_AGENT,
+    "Connection": "close",
     "Accept-Encoding": "gzip",
 }
-MAX_ROUNDS = 5  # 固定上限：最多五轮；符合恢复条件时仍可提前结束。
+MAX_ROUNDS = min(5, max(1, int(os.getenv("SUB_MAX_ROUNDS", "5"))))  # 最多五轮；保留原有配置能力。
 # Spool threshold is a RAM-to-disk transition, never a response-size limit.
 SPOOL_MEMORY_THRESHOLD = 2 * 1024 * 1024
 STREAM_CHUNK_BYTES = 256 * 1024
@@ -79,7 +82,7 @@ class PanelStats:
     elapsed_seconds: float = 0.0
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     print(f"✖ {message}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -106,18 +109,30 @@ def get_subscription_urls() -> list[str]:
 
 
 def host_header_for(url: str) -> str | None:
+    """Build the HTTP Host authority for this exact URL, including non-default ports."""
     try:
         parsed = urlsplit(url)
         if not parsed.hostname:
             return None
         host = parsed.hostname
         try:
-            if ipaddress.ip_address(host).version == 6:
-                host = f"[{host}]"
+            address = ipaddress.ip_address(host)
+            if address.version == 6:
+                host = f"[{address.compressed}]"
+            else:
+                host = address.compressed
         except ValueError:
-            pass
-        return f"{host}:{parsed.port}" if parsed.port is not None else host
-    except ValueError:
+            # Requests encodes internationalized URL hostnames to IDNA for the
+            # request target; keep the explicit Host header in the same form.
+            host = host.encode("idna").decode("ascii")
+        port = parsed.port
+        is_default_port = (
+            port == 80 and parsed.scheme.lower() == "http"
+        ) or (
+            port == 443 and parsed.scheme.lower() == "https"
+        )
+        return f"{host}:{port}" if port is not None and not is_default_port else host
+    except (UnicodeError, ValueError):
         return None
 
 
@@ -191,10 +206,13 @@ def source_from_line(line: str) -> str | None:
 
 
 def request_headers_for(url: str) -> dict[str, str]:
-    headers = dict(REQUEST_HEADERS)
+    """Return headers in the captured v2rayNG order: UA, Connection, Host, Encoding."""
     host_header = host_header_for(url)
-    if host_header:
-        headers["Host"] = host_header
+    headers: dict[str, str] = {}
+    for name, value in REQUEST_HEADERS.items():
+        if name == "Accept-Encoding" and host_header:
+            headers["Host"] = host_header
+        headers[name] = value
     return headers
 
 
@@ -248,44 +266,69 @@ def _decode_base64_spool(source):
 
 
 def decode_subscription_spool(body):
-    """Return a streaming UTF-8 text reader for plain, gzip or Base64 VLESS data."""
+    """Return a UTF-8 text reader for plain, gzip or Base64 VLESS data.
+
+    The returned TextIOWrapper owns its spool. Any spool not transferred to a
+    returned wrapper is closed here, including Base64 UTF-8 validation errors.
+    """
     payload = body
-    payload.seek(0)
-    if payload.read(2) == b"\x1f\x8b":
+    decoded = None
+    try:
         payload.seek(0)
-        decompressed = _new_spool()
-        try:
-            with gzip.GzipFile(fileobj=payload, mode="rb") as source:
-                shutil.copyfileobj(source, decompressed, length=STREAM_CHUNK_BYTES)
-            decompressed.seek(0)
-        except (EOFError, OSError, zlib.error) as exc:
-            decompressed.close()
-            payload.close()
-            raise ValueError("gzip 响应解压失败或数据不完整") from exc
-        payload.close()
-        payload = decompressed
-
-    try:
-        if _count_vless_in_spool(payload):
+        if payload.read(2) == b"\x1f\x8b":
             payload.seek(0)
-            return io.TextIOWrapper(payload, encoding="utf-8-sig", errors="strict", newline=None)
-    except UnicodeDecodeError:
-        # A Base64 response is ASCII; invalid UTF-8 is not a direct VLESS body.
-        pass
+            decompressed = _new_spool()
+            try:
+                with gzip.GzipFile(fileobj=payload, mode="rb") as source:
+                    shutil.copyfileobj(source, decompressed, length=STREAM_CHUNK_BYTES)
+                decompressed.seek(0)
+            except (EOFError, OSError, zlib.error) as exc:
+                decompressed.close()
+                raise ValueError("gzip 响应解压失败或数据不完整") from exc
+            payload.close()
+            payload = decompressed
 
-    try:
-        decoded = _decode_base64_spool(payload)
-        if not _count_vless_in_spool(decoded):
-            decoded.close()
+        try:
+            has_plain_vless = _count_vless_in_spool(payload) > 0
+        except UnicodeDecodeError:
+            # Base64 payloads are ASCII; malformed UTF-8 can still be Base64.
+            has_plain_vless = False
+
+        if has_plain_vless:
+            payload.seek(0)
+            text_stream = io.TextIOWrapper(
+                payload, encoding="utf-8-sig", errors="strict", newline=None
+            )
+            payload = None  # Ownership moves to TextIOWrapper.
+            return text_stream
+
+        try:
+            decoded = _decode_base64_spool(payload)
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise ValueError(
+                "响应既不是明文 VLESS，也不是可识别的 Base64 VLESS"
+            ) from exc
+
+        try:
+            decoded_has_vless = _count_vless_in_spool(decoded) > 0
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                "响应既不是明文 VLESS，也不是可识别的 Base64 VLESS"
+            ) from exc
+        if not decoded_has_vless:
             raise ValueError("Base64 解码成功，但内容没有发现 VLESS 节点")
+
         decoded.seek(0)
-        payload.close()
-        return io.TextIOWrapper(decoded, encoding="utf-8-sig", errors="strict", newline=None)
-    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
-        payload.close()
-        if isinstance(exc, ValueError) and "没有发现 VLESS" in str(exc):
-            raise
-        raise ValueError("响应既不是明文 VLESS，也不是可识别的 Base64 VLESS") from exc
+        text_stream = io.TextIOWrapper(
+            decoded, encoding="utf-8-sig", errors="strict", newline=None
+        )
+        decoded = None  # Ownership moves to TextIOWrapper.
+        return text_stream
+    finally:
+        if decoded is not None:
+            decoded.close()
+        if payload is not None:
+            payload.close()
 
 
 def fetch(url: str, session: requests.Session):
@@ -361,13 +404,17 @@ def retry_delay(attempt: int, retry_after: str | None) -> float:
 def decode_subscription_body(body: bytes | bytearray) -> str:
     """Compatibility helper for tests/tools; production fetch uses streaming spools."""
     spool = _new_spool()
-    spool.write(body)
-    spool.seek(0)
-    text_stream = decode_subscription_spool(spool)
+    text_stream = None
     try:
+        spool.write(body)
+        spool.seek(0)
+        text_stream = decode_subscription_spool(spool)
         return text_stream.read()
     finally:
-        text_stream.close()
+        if text_stream is not None:
+            text_stream.close()
+        else:
+            spool.close()
 
 
 def iter_subscription_lines(payload):
@@ -552,8 +599,27 @@ def cache_panel_response(index: int, text, cache: dict[str, object], panel_stats
 
 
 def build_tagged_link_nodes(cache: dict[str, object]) -> dict[str, None]:
-    """Return the already-maintained link-3 union in first-seen order."""
-    return cache["link_nodes"]
+    """Build panel-3 output in bestcf.txt label order, then append unlabelled nodes."""
+    ordered: dict[str, None] = {}
+    sources = cache["sources"]
+
+    # Provider priority follows the current bestcf.txt order. Within each
+    # provider, retain first-seen order across the five accumulation rounds.
+    for label in SOURCE_LABELS:
+        for endpoint in sources.get(label, {}):
+            ordered.setdefault(endpoint, None)
+
+    # Preserve any future/unregistered source bucket without assigning it a
+    # known label or allowing it to displace a registered provider's priority.
+    for label, bucket in sources.items():
+        if label in SOURCE_LABEL_SET:
+            continue
+        for endpoint in bucket:
+            ordered.setdefault(endpoint, None)
+
+    for endpoint in cache["unlabelled"]:
+        ordered.setdefault(endpoint, None)
+    return ordered
 
 
 def panel_nodes(cache: dict[str, object]) -> dict[str, None]:
@@ -612,7 +678,7 @@ def _file_sha256(path: Path) -> str:
 def write_results(nodes, stats_content: str) -> None:
     """Stream sub.txt to disk and update its run statistics as a recoverable pair."""
     if not nodes:
-        fail("四个面板均未取得有效 HOST:PORT，保留旧 sub.txt")
+        raise ValueError("四个面板均未取得有效 HOST:PORT，保留旧 sub.txt")
 
     staged: dict[Path, Path] = {}
     replaced: list[Path] = []
@@ -635,14 +701,14 @@ def write_results(nodes, stats_content: str) -> None:
         with output_stage.open("w", encoding="utf-8", newline="\n", buffering=1024 * 1024) as handle:
             for node in nodes:
                 if node in BLOCKED_ENDPOINTS or not ENDPOINT_RE.fullmatch(node):
-                    fail(f"最终输出包含无效或被过滤的 endpoint：{node}")
+                    raise ValueError(f"最终输出包含无效或被过滤的 endpoint：{node}")
                 handle.write(node)
                 handle.write("\n")
                 count += 1
             handle.flush()
             os.fsync(handle.fileno())
         if not count:
-            fail("最终合并结果为空，保留旧 sub.txt")
+            raise ValueError("最终合并结果为空，保留旧 sub.txt")
         with stats_stage.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(stats_content.rstrip() + "\n")
             handle.flush()
@@ -712,6 +778,58 @@ def local_time_text() -> str:
     return datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M:%S 台北时间")
 
 
+def _display_width(value: object) -> int:
+    """Return terminal column width, counting CJK full-width characters as two."""
+    text = str(value)
+    width = 0
+    for char in text:
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+    return width
+
+
+def _pad_display(value: object, width: int, align: str = "left") -> str:
+    text = str(value)
+    padding = max(0, width - _display_width(text))
+    if align == "right":
+        return " " * padding + text
+    if align == "center":
+        left = padding // 2
+        return " " * left + text + " " * (padding - left)
+    return text + " " * padding
+
+
+def _format_table(
+    headers: list[str],
+    rows: list[list[object]],
+    alignments: list[str] | None = None,
+) -> list[str]:
+    """Render a stable-width UTF-8 table; alignment is based on display width, not len()."""
+    if not headers:
+        return []
+    if any(len(row) != len(headers) for row in rows):
+        raise ValueError("统计表格行的列数与表头不一致")
+    aligns = alignments or ["left"] * len(headers)
+    if len(aligns) != len(headers):
+        raise ValueError("统计表格的对齐方式数量与列数不一致")
+
+    text_rows = [[str(value) for value in row] for row in rows]
+    widths = [
+        max(_display_width(headers[index]), *(_display_width(row[index]) for row in text_rows))
+        for index in range(len(headers))
+    ]
+
+    def render(row: list[str]) -> str:
+        return " │ ".join(
+            _pad_display(value, widths[index], aligns[index])
+            for index, value in enumerate(row)
+        )
+
+    separator = "─┼─".join("─" * width for width in widths)
+    return [render(headers), separator, *(render(row) for row in text_rows)]
+
+
 def render_stats(
     urls: list[str],
     panel_stats: list[PanelStats],
@@ -723,15 +841,19 @@ def render_stats(
     final_count: int,
     elapsed_seconds: float = 0.0,
 ) -> str:
-    """Build a compact, readable report without exposing any subscription address."""
-    rule = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    recovered = sum(bool(panel_caches[2]["sources"].get(label)) for label in SOURCE_LABELS)
+    """Build an aligned, readable report without exposing subscription addresses."""
+    del urls  # URLs are intentionally not rendered or otherwise needed in this report.
+    rule = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    tagged_cache = panel_caches[2]
+    recovered = sum(bool(tagged_cache["sources"].get(label)) for label in SOURCE_LABELS)
     pending = round_history[-1]["pending"] if round_history else list(SOURCE_LABELS)
     total_request_seconds = sum(item.elapsed_seconds for item in panel_stats)
     total_wait_seconds = sum(float(item.get("wait_seconds", 0.0)) for item in round_history)
 
-    if not pending:
+    if not pending and len(round_history) < MAX_ROUNDS:
         finish_reason = "所有已知订阅器均已取得有效缓存，提前结束"
+    elif not pending:
+        finish_reason = f"第 {len(round_history)} 轮全部订阅器均已取得有效缓存"
     elif len(round_history) >= MAX_ROUNDS:
         finish_reason = f"达到 {MAX_ROUNDS} 轮上限；保留本次取得的全部有效缓存"
     else:
@@ -749,74 +871,133 @@ def render_stats(
         f"结束原因：{finish_reason}",
         "",
         "【一、面板总览】",
-        "面板｜类型｜请求｜失败｜缓存唯一｜累计请求耗时",
     ]
+    overview_rows: list[list[object]] = []
     for item in panel_stats:
         role = "订阅面板" if item.index == 3 else "独立面板"
-        unique_count = cache_size(panel_caches[item.index - 1])
-        lines.append(
-            f"{item.index:>2}｜{role}｜{item.requested_rounds:>2} 次｜"
-            f"{item.failed_rounds:>2} 次｜{unique_count:>8,}｜{item.elapsed_seconds:>7.1f} 秒"
-        )
+        overview_rows.append([
+            f"{item.index}", role, f"{item.requested_rounds} 次", f"{item.failed_rounds} 次",
+            f"{cache_size(panel_caches[item.index - 1]):,}", f"{item.elapsed_seconds:.1f} 秒",
+        ])
+    lines.extend(_format_table(
+        ["面板", "类型", "请求", "失败", "缓存唯一", "累计请求耗时"],
+        overview_rows,
+        ["right", "left", "right", "right", "right", "right"],
+    ))
 
     lines.extend(["", "【二、逐轮请求】"])
     for round_item in round_history:
         recovered_this_round = len(SOURCE_LABELS) - len(round_item["pending"])
-        lines.append(f"第 {round_item['round']}/{MAX_ROUNDS} 轮｜第 3 面板订阅器恢复 {recovered_this_round}/{len(SOURCE_LABELS)}")
+        lines.append(
+            f"第 {round_item['round']}/{MAX_ROUNDS} 轮｜"
+            f"第 3 面板订阅器恢复 {recovered_this_round}/{len(SOURCE_LABELS)}"
+        )
+        panel_rows: list[list[object]] = []
         for index, result in enumerate(round_item["links"], 1):
-            elapsed = float(result.get("elapsed", result.get("metric", {}).get("elapsed", 0.0)))
             if not result["ok"]:
-                lines.append(
-                    f"  面板 {index}｜失败｜耗时 {elapsed:.1f} 秒｜"
-                    f"{result['error']}｜已缓存节点保留"
-                )
+                elapsed = float(result.get("elapsed", 0.0))
+                panel_rows.append([
+                    str(index), "请求失败", "—", "—", "—", "—", "—", "—", "—", "—", f"{elapsed:.1f} 秒",
+                ])
                 continue
             metric = result["metric"]
-            lines.append(
-                f"  面板 {index}｜原始 {metric['raw']:,}｜有效 {metric['valid']:,}｜"
-                f"本轮唯一 {metric['round_unique']:,}｜新增 {metric['added']:,}｜"
-                f"重复 {metric['response_duplicates'] + metric['cached_duplicates']:,}｜"
-                f"无效 {metric['invalid']:,}｜过滤本机 {metric['blocked']:,}｜"
-                f"累计 {metric['cumulative']:,}｜{elapsed:.1f} 秒"
-            )
+            elapsed = float(result.get("elapsed", metric.get("elapsed", 0.0)))
+            panel_rows.append([
+                str(index), "成功", f"{metric['raw']:,}", f"{metric['valid']:,}",
+                f"{metric['round_unique']:,}", f"{metric['added']:,}",
+                f"{metric['response_duplicates'] + metric['cached_duplicates']:,}",
+                f"{metric['invalid']:,}", f"{metric['blocked']:,}",
+                f"{metric['cumulative']:,}", f"{elapsed:.1f} 秒",
+            ])
+        lines.extend(_format_table(
+            ["面板", "请求状态", "原始", "有效", "本轮唯一", "新增缓存", "重复", "无效", "过滤本机", "累计唯一", "耗时"],
+            panel_rows,
+            ["right", "left", "right", "right", "right", "right", "right", "right", "right", "right", "right"],
+        ))
+        for index, result in enumerate(round_item["links"], 1):
+            if not result["ok"]:
+                lines.append(f"  面板 {index} 错误：{result['error']}；已有缓存保留")
         missing = round_item["pending"]
-        lines.append("  尚未恢复：" + ("、".join(missing) if missing else "全部恢复"))
+        lines.append("尚未恢复：" + ("、".join(missing) if missing else "全部恢复"))
         wait_seconds = float(round_item.get("wait_seconds", 0.0))
         if wait_seconds > 0:
-            lines.append(f"  下一轮等待：{wait_seconds:g} 秒")
+            lines.append(f"下一轮等待：{wait_seconds:g} 秒")
         lines.append("")
 
-    lines.extend([rule, "【三、第 3 面板订阅器累计情况】"])
-    lines.append("状态｜订阅器｜缓存唯一｜累计有效｜无效｜过滤本机")
+    lines.extend([rule, "【三、第 3 面板订阅器累计及逐轮情况】"])
+    # Link 3 stores per-round provider metrics in round_history. A round value
+    # is the unique valid HOST:PORT count within that provider in that response;
+    # the same endpoint under another provider is shown in both provider rows.
+    round_headers = [f"第{item['round']}轮唯一" for item in round_history]
+    source_headers = [
+        "状态", "订阅器", *round_headers, "缓存唯一", "累计有效行", "无效行", "过滤本机",
+    ]
+    source_rows: list[list[object]] = []
     for label in SOURCE_LABELS:
-        cached = len(panel_caches[2]["sources"].get(label, {}))
+        cached = len(tagged_cache["sources"].get(label, {}))
         metric = source_totals.get(label, {})
         status = "✓ 已恢复" if cached >= MIN_SOURCE_ENDPOINTS else "○ 待恢复"
-        lines.append(
-            f"{status}｜{label}｜{cached:>6,}｜{metric.get('valid', 0):>6,}｜"
-            f"{metric.get('invalid', 0):>4,}｜{metric.get('blocked', 0):>4,}"
-        )
+        per_round: list[object] = []
+        for round_item in round_history:
+            links = round_item.get("links", [])
+            link3_result = links[2] if len(links) >= 3 else None
+            if not link3_result or not link3_result.get("ok"):
+                per_round.append("—")
+            else:
+                source_metric = link3_result.get("sources", {}).get(label, {})
+                per_round.append(f"{int(source_metric.get('round_unique', 0)):,}")
+        source_rows.append([
+            status, label, *per_round, f"{cached:,}", f"{metric.get('valid', 0):,}",
+            f"{metric.get('invalid', 0):,}", f"{metric.get('blocked', 0):,}",
+        ])
 
-    tagged_cache = panel_caches[2]
-    provider_cache_rows = sum(len(bucket) for bucket in tagged_cache["sources"].values())
+    # Unlabelled rows are visible alongside known providers, not hidden in a footnote.
     unlabelled_cache_rows = len(tagged_cache["unlabelled"])
+    unlabelled_round_values: list[object] = []
+    for round_item in round_history:
+        links = round_item.get("links", [])
+        link3_result = links[2] if len(links) >= 3 else None
+        if not link3_result or not link3_result.get("ok"):
+            unlabelled_round_values.append("—")
+        else:
+            unlabelled_round_values.append(
+                f"{int(link3_result.get('unlabelled', {}).get('round_unique', 0)):,}"
+            )
+    source_rows.append([
+        "— 未分类", "未识别标签", *unlabelled_round_values,
+        f"{unlabelled_cache_rows:,}", f"{unlabelled_totals.get('valid', 0):,}",
+        f"{unlabelled_totals.get('invalid', 0):,}", f"{unlabelled_totals.get('blocked', 0):,}",
+    ])
+    source_alignments = ["left", "left", *(["right"] * len(round_history)), "right", "right", "right", "right"]
+    lines.extend(_format_table(source_headers, source_rows, source_alignments))
+
+    provider_cache_rows = sum(len(bucket) for bucket in tagged_cache["sources"].values())
     link3_unique = len(build_tagged_link_nodes(tagged_cache))
+    cross_label_duplicates = provider_cache_rows + unlabelled_cache_rows - link3_unique
     lines.extend([
-        f"分类缓存：{provider_cache_rows + unlabelled_cache_rows:,} 条",
+        "",
+        "说明：每轮唯一＝该订阅器本轮有效 HOST:PORT 去重数；相同节点若出现在不同订阅器中，会分别计入各自行。",
+        "      缓存唯一＝跨轮累计后该订阅器自身去重数；累计有效行包含重复行。",
+        "      ‘—’表示该轮第 3 面板请求未成功完成；‘0’表示请求成功但该订阅器本轮没有有效唯一节点。",
+        f"订阅器分类缓存项：{provider_cache_rows:,} 条（按标签分别统计，跨标签重复分别计入）",
+        f"未识别标签缓存唯一：{unlabelled_cache_rows:,} 个",
         f"第 3 面板合并去重：{link3_unique:,} 个",
-        f"跨订阅器/未标注重复：{provider_cache_rows + unlabelled_cache_rows - link3_unique:,} 个",
-        f"未识别标签：原始 {unlabelled_totals['raw']:,}｜有效 {unlabelled_totals['valid']:,}｜"
-        f"无效 {unlabelled_totals['invalid']:,}｜过滤本机 {unlabelled_totals['blocked']:,}｜"
-        f"缓存唯一 {unlabelled_cache_rows:,}",
+        f"跨订阅器/未标注重复：{cross_label_duplicates:,} 个",
+        f"未识别标签累计：原始 {unlabelled_totals['raw']:,}｜有效 {unlabelled_totals['valid']:,}｜"
+        f"无效 {unlabelled_totals['invalid']:,}｜过滤本机 {unlabelled_totals['blocked']:,}",
         "",
         rule,
         "【四、四面板最终合并】",
     ])
-    for summary in panel_merge:
-        lines.append(
-            f"面板 {summary['index']}｜链接唯一 {summary['panel_unique']:,}｜"
-            f"新增到总表 {summary['new_global']:,}｜与前面面板重复 {summary['overlap']:,}"
-        )
+    merge_rows = [[
+        str(summary["index"]), f"{summary['panel_unique']:,}",
+        f"{summary['new_global']:,}", f"{summary['overlap']:,}",
+    ] for summary in panel_merge]
+    lines.extend(_format_table(
+        ["面板", "链接唯一", "新增到总表", "与前面面板重复"],
+        merge_rows,
+        ["right", "right", "right", "right"],
+    ))
     lines.extend([
         "",
         rule,
@@ -917,7 +1098,11 @@ def main() -> int:
                     "response_duplicates": sum(item["response_duplicates"] for item in all_metrics),
                     "cached_duplicates": sum(item["cached_duplicates"] for item in all_metrics),
                     "cumulative": cache_size(cache),
-                    "cross_bucket_duplicates": result["cross_bucket_duplicates"],
+                    # The console label is round-scoped; keep the cumulative
+                    # total separately so a previous round is not repeated as
+                    # though it had happened again in this response.
+                    "cross_bucket_duplicates": result["cross_bucket_duplicates_added"],
+                    "cross_bucket_duplicates_cumulative": result["cross_bucket_duplicates"],
                     "elapsed": request_elapsed,
                 }
                 print(
@@ -968,7 +1153,10 @@ def main() -> int:
             })
             print(f"\n第 3 面板订阅器状态：{len(SOURCE_LABELS)-len(pending)}/{len(SOURCE_LABELS)} 已取得有效缓存")
             if not pending:
-                print("✓ 第 3 面板所有已知订阅器均有有效缓存，提前结束。")
+                if round_number < MAX_ROUNDS:
+                    print("✓ 第 3 面板所有已知订阅器均有有效缓存，提前结束。")
+                else:
+                    print(f"✓ 第 3 面板所有已知订阅器均在第 {round_number} 轮取得有效缓存。")
                 break
             if round_number < MAX_ROUNDS:
                 print("仍未恢复：" + "、".join(pending))
