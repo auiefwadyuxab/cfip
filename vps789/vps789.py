@@ -24,7 +24,7 @@ import tempfile
 import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Literal
@@ -66,7 +66,7 @@ DOWNLOAD_SPEED_RE = re.compile(
     r"(?<![-+−\d.])(?P<number>\d+(?:\.\d+)?)\s*(?P<unit>KB|MB|GB|TB)\s*/\s*s\b",
     re.IGNORECASE,
 )
-NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+NUMBER_RE = re.compile(r"[+\-−]?\d+(?:\.\d+)?")
 LATENCY_RE = re.compile(r"(?<![-+−\d.])(\d+(?:\.\d+)?)\s*ms\b", re.IGNORECASE)
 LOSS_RE = re.compile(r"(?<![-+−\d.])(\d+(?:\.\d+)?)\s*%")
 
@@ -198,7 +198,7 @@ def find_data_rows(page: Page) -> Locator:
 
 
 def row_signature(rows: Locator, limit: int | None = 3) -> tuple[str, ...]:
-    """Sample first/last table rows in one browser call for cheap page-change checks."""
+    """Sample visible rows to determine whether the first table has usable text."""
     count = rows.count()
     if count <= 0:
         return ()
@@ -342,7 +342,7 @@ def active_page_marker(page: Page) -> str:
         "[aria-current='page']",
     )
     for selector in selectors:
-        locator = page.locator(selector).first
+        locator = page.locator(selector).filter(visible=True).first
         try:
             if locator.count():
                 text = clean_text(locator.inner_text())
@@ -369,8 +369,13 @@ def inspect_pagination_state(
     如果页面没有分页控件，则按单页表格处理；存在分页控件但证据不足时标记为未知。
     """
     script = r"""(known) => {
-      const roots = Array.from(document.querySelectorAll('.el-pagination'))
-        .filter(root => root.getClientRects().length > 0);
+      const isVisible = element => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden'
+          && Number(style.opacity || '1') > 0.01 && rect.width > 0 && rect.height > 0;
+      };
+      const roots = Array.from(document.querySelectorAll('.el-pagination')).filter(isVisible);
       if (!roots.length) {
         return { present: false, status: 'last', evidence: '未检测到可见分页控件，按单页表格处理' };
       }
@@ -528,7 +533,7 @@ def parse_page_number(marker: str) -> int | None:
 
 def pagination_total_count(page: Page) -> int | None:
     """读取 Element 分页组件的总记录数，例如“共 669 条”。"""
-    locator = page.locator(".el-pagination__total").first
+    locator = page.locator(".el-pagination__total").filter(visible=True).first
     try:
         if locator.count() == 0:
             return None
@@ -667,6 +672,30 @@ def add_page_note(
     page_reports[-1][key] = f"{existing}；{note}" if existing else note
 
 
+def disabled_next_button_note(status: PaginationStatus, evidence: str) -> str:
+    """Return a note unless a disabled next control is backed by LAST evidence."""
+    if status == "more":
+        return f"下一页按钮已禁用，但分页信息仍显示有后续页；{evidence}。"
+    if status == "unknown":
+        return f"下一页按钮已禁用，但无法确认已经到达末页；{evidence}。本次结果按部分完成标记。"
+    return ""
+
+
+def finalize_page_timing(
+    page_report: dict[str, object],
+    page_started: float,
+    *,
+    read_elapsed: float,
+    snapshot_elapsed: float,
+    next_page_wait_elapsed: float,
+) -> None:
+    """Finalize real page duration after snapshot and any next-page wait finish."""
+    page_report["read_elapsed_seconds"] = max(0.0, read_elapsed)
+    page_report["snapshot_elapsed_seconds"] = max(0.0, snapshot_elapsed)
+    page_report["next_page_wait_seconds"] = max(0.0, next_page_wait_elapsed)
+    page_report["elapsed_seconds"] = max(0.0, time.monotonic() - page_started)
+
+
 def collect_page_domains(page: Page, diagnostics_dir: Path,
                          page_reports: list[dict[str, object]]) -> dict[str, DomainRecord]:
     wait_for_first_data_row(page)
@@ -684,7 +713,7 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
         raise RuntimeError("第一页表格内容未能稳定；未读取不完整的初始数据。")
 
     # Page size is taken from the stabilized first page, then used with the
-    # site's total count to validate short final pages (e.g. 669 -> 200/200/200/69).
+    # site's total count to validate short final pages (e.g. 670 -> 200/200/200/70).
     page_size = len(initial_signature)
     total_count = pagination_total_count(page)
     if total_count is not None and page_size:
@@ -701,7 +730,11 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
     page_no = 0
 
     while True:
+        # The timer begins only after the current page has become stable.
+        # It is finalized after snapshotting and, for non-final pages, the next
+        # page has also finished loading. This makes the reported page duration real.
         page_started = time.monotonic()
+        read_started = page_started
         page_no += 1
         rows = find_data_rows(page)
         row_count = rows.count()
@@ -733,7 +766,8 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
             record = extract_record_from_row(cells)
             if record is None:
                 if len(skipped_examples) < 5:
-                    skipped_examples.append(" | ".join(cells[:5]))
+                    example = " | ".join(cells[:5]) or "(空行)"
+                    skipped_examples.append(example)
                 continue
 
             valid_rows += 1
@@ -767,41 +801,51 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
         cross_page_duplicates += page_cross_duplicates
 
         unrecognized_rows = max(0, row_count - valid_rows - row_read_failures)
+        skipped_rows = unrecognized_rows + row_read_failures
         data_notes: list[str] = []
         if row_read_failures:
             data_notes.append(f"DOM 读取失败 {row_read_failures} 行")
         if unrecognized_rows:
             data_notes.append(f"未识别有效域名 {unrecognized_rows} 行")
 
-        page_report = {
+        read_elapsed = time.monotonic() - read_started
+        page_report: dict[str, object] = {
             "page": page_no,
             "raw_rows": row_count,
             "valid_domains": valid_rows,
             "unique_domains": len(page_records),
             "duplicate_rows": page_duplicates,
             "cross_page_duplicates": page_cross_duplicates,
-            "skipped_rows": row_count - valid_rows,
+            "unrecognized_rows": unrecognized_rows,
+            "skipped_rows": skipped_rows,
             "missing_latency": missing_latency,
             "missing_loss": missing_loss,
             "missing_speed": missing_speed,
             "row_read_failures": row_read_failures,
-            "elapsed_seconds": time.monotonic() - page_started,
+            "read_elapsed_seconds": read_elapsed,
+            "snapshot_elapsed_seconds": 0.0,
+            "next_page_wait_seconds": 0.0,
+            "elapsed_seconds": 0.0,
             "skip_examples": skipped_examples,
         }
         if data_notes:
             page_report["data_note"] = "；".join(data_notes)
         page_reports.append(page_report)
         print(
-            f"[网页] 第 {page_no} 页：原始 {row_count} 行；识别域名 {valid_rows} 条；"
-            f"本页唯一 {len(page_records)}；本页重复 {page_duplicates}；"
-            f"与前页重复 {page_cross_duplicates}；无法识别域名 {page_report['skipped_rows']} 行；"
-            f"缺延迟 {missing_latency}、缺丢包率 {missing_loss}、缺速度 {missing_speed}；"
-            f"DOM 读取失败 {row_read_failures}；累计全局唯一域名 {len(all_records)}；"
-            f"本页耗时 {page_report['elapsed_seconds']:.1f} 秒。"
+            f"[网页] 第 {page_no} 页：原始 {row_count} 行；有效识别 {valid_rows} 行；"
+            f"页内唯一 {len(page_records)}；页内重复 {page_duplicates}；"
+            f"跨页重复 {page_cross_duplicates}；未识别 {unrecognized_rows} 行；"
+            f"DOM 读取失败 {row_read_failures} 行；缺延迟 {missing_latency}、"
+            f"缺丢包率 {missing_loss}、缺速度 {missing_speed}；"
+            f"数据读取与去重 {read_elapsed * 1000:.1f} 毫秒。"
         )
         if skipped_examples:
-            print("[网页] 跳过行示例：" + " || ".join(skipped_examples))
+            print("[网页] 跳过示例：" + " || ".join(skipped_examples))
+
+        snapshot_started = time.monotonic()
         save_page_snapshot(page, diagnostics_dir, page_no)
+        snapshot_elapsed = time.monotonic() - snapshot_started
+        next_page_wait_elapsed = 0.0
 
         next_button = find_next_page_button(page)
         if next_button.count() == 0:
@@ -823,26 +867,56 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
             if pagination_status != "last":
                 print(f"[网页] {note}")
                 add_page_note(page_reports, "pagination_note", note)
+                extra_started = time.monotonic()
                 save_page_snapshot(page, diagnostics_dir, page_no, suffix="-pagination-unconfirmed")
+                snapshot_elapsed += time.monotonic() - extra_started
+            finalize_page_timing(
+                page_report, page_started,
+                read_elapsed=read_elapsed,
+                snapshot_elapsed=snapshot_elapsed,
+                next_page_wait_elapsed=next_page_wait_elapsed,
+            )
             break
+
         try:
             class_text = (next_button.get_attribute("class") or "").casefold()
             aria_disabled = (next_button.get_attribute("aria-disabled") or "").casefold()
-            if next_button.is_disabled() or aria_disabled == "true" or "is-disabled" in class_text:
+            button_disabled = (
+                next_button.is_disabled()
+                or aria_disabled == "true"
+                or "is-disabled" in class_text
+            )
+            if button_disabled:
                 _, pagination_status, evidence = inspect_pagination_state(
                     page, total_count=total_count, page_size=page_size
                 )
-                if pagination_status == "more":
-                    note = f"下一页按钮已禁用，但分页信息仍显示有后续页；{evidence}。"
+                note = disabled_next_button_note(pagination_status, evidence)
+                if note:
                     print(f"[网页] {note}")
                     add_page_note(page_reports, "pagination_note", note)
-                    save_page_snapshot(page, diagnostics_dir, page_no, suffix="-disabled-next-conflict")
+                    extra_started = time.monotonic()
+                    save_page_snapshot(page, diagnostics_dir, page_no, suffix="-disabled-next-unconfirmed")
+                    snapshot_elapsed += time.monotonic() - extra_started
+                finalize_page_timing(
+                    page_report, page_started,
+                    read_elapsed=read_elapsed,
+                    snapshot_elapsed=snapshot_elapsed,
+                    next_page_wait_elapsed=next_page_wait_elapsed,
+                )
                 break
         except PlaywrightError as exc:
             note = f"读取下一页按钮状态失败（{type(exc).__name__}）；保留已抓取页面并停止后续翻页。"
             print(f"[网页] {note}")
             add_page_note(page_reports, "pagination_note", note)
+            extra_started = time.monotonic()
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-state-failed")
+            snapshot_elapsed += time.monotonic() - extra_started
+            finalize_page_timing(
+                page_report, page_started,
+                read_elapsed=read_elapsed,
+                snapshot_elapsed=snapshot_elapsed,
+                next_page_wait_elapsed=next_page_wait_elapsed,
+            )
             break
 
         old_signature = row_data_signature(rows)
@@ -850,21 +924,34 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
         old_page_number = parse_page_number(old_page_marker)
         target_page = old_page_number + 1 if old_page_number is not None else None
         expected_rows = expected_page_row_count(total_count, page_size, target_page)
+        transition_started = time.monotonic()
         try:
             next_button.click()
         except PlaywrightError as exc:
+            next_page_wait_elapsed = time.monotonic() - transition_started
             note = f"点击下一页失败（{type(exc).__name__}）；保留已抓取页面并停止后续翻页。"
             print(f"[网页] {note}")
             add_page_note(page_reports, "pagination_note", note)
+            extra_started = time.monotonic()
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-click-failed")
+            snapshot_elapsed += time.monotonic() - extra_started
+            finalize_page_timing(
+                page_report, page_started,
+                read_elapsed=read_elapsed,
+                snapshot_elapsed=snapshot_elapsed,
+                next_page_wait_elapsed=next_page_wait_elapsed,
+            )
             break
-        if not wait_for_page_change(
+
+        page_changed = wait_for_page_change(
             page,
             rows,
             old_signature,
             expected_page=target_page,
             expected_row_count=expected_rows,
-        ):
+        )
+        next_page_wait_elapsed = time.monotonic() - transition_started
+        if not page_changed:
             expectation = []
             if target_page is not None:
                 expectation.append(f"目标页码 {target_page}")
@@ -877,7 +964,17 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
             )
             print(f"[网页] {note}")
             add_page_note(page_reports, "pagination_note", note)
+            extra_started = time.monotonic()
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-timeout")
+            snapshot_elapsed += time.monotonic() - extra_started
+
+        finalize_page_timing(
+            page_report, page_started,
+            read_elapsed=read_elapsed,
+            snapshot_elapsed=snapshot_elapsed,
+            next_page_wait_elapsed=next_page_wait_elapsed,
+        )
+        if not page_changed:
             break
 
     captured_rows = sum(int(item.get("raw_rows", 0)) for item in page_reports)
@@ -890,8 +987,6 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
         add_page_note(page_reports, "pagination_note", note)
 
     print(f"[网页] 所有已取得页面合并后唯一域名：{len(all_records)}；跨页重复：{cross_page_duplicates}。")
-    # Keep the insertion-ordered dictionary through the API merge and writer;
-    # converting to a list here would duplicate the full record reference array.
     return all_records
 
 def capture_page_debug(page: Page | None, diagnostics_dir: Path, attempt: int, error: Exception) -> None:
@@ -1246,23 +1341,38 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
     web_records, page_reports, retry_notes = scrape_vps789_page(args.url, diagnostics_dir)
     web_elapsed = time.monotonic() - web_started
     total_rows = sum(int(item.get("raw_rows", 0)) for item in page_reports)
-    skipped_rows = sum(int(item.get("skipped_rows", 0)) for item in page_reports)
+    valid_rows_total = sum(int(item.get("valid_domains", 0)) for item in page_reports)
+    unrecognized_rows_total = sum(int(item.get("unrecognized_rows", 0)) for item in page_reports)
+    row_read_failures_total = sum(int(item.get("row_read_failures", 0)) for item in page_reports)
+    skipped_rows = unrecognized_rows_total + row_read_failures_total
     unique_web = len(web_records)
     web_duplicates = sum(
         int(item.get("duplicate_rows", 0)) + int(item.get("cross_page_duplicates", 0))
         for item in page_reports
     )
+    page_elapsed_total = sum(float(item.get("elapsed_seconds", 0.0)) for item in page_reports)
+    web_setup_and_cleanup = max(0.0, web_elapsed - page_elapsed_total)
 
     print("\n┌─ 1. 网页分页结果")
-    print("│ 页码｜原始行｜识别域名｜本页唯一｜本页重复｜跨页重复｜跳过行｜耗时")
+    print("│ 页码｜原始行｜识别行｜页内唯一｜页内重复｜跨页重复｜未识别｜DOM失败｜总跳过｜采集耗时")
     for item in page_reports:
+        read_elapsed = float(item.get("read_elapsed_seconds", 0.0))
+        snapshot_elapsed = float(item.get("snapshot_elapsed_seconds", 0.0))
+        next_wait = float(item.get("next_page_wait_seconds", 0.0))
+        page_elapsed = float(item.get("elapsed_seconds", 0.0))
         print(
             f"│ {int(item['page']):>3}｜{int(item['raw_rows']):>6,}｜"
-            f"{int(item['valid_domains']):>8,}｜{int(item.get('unique_domains', 0)):>8,}｜"
-            f"{int(item.get('duplicate_rows', 0)):>8,}｜"
-            f"{int(item.get('cross_page_duplicates', 0)):>8,}｜"
-            f"{int(item['skipped_rows']):>6,}｜"
-            f"{float(item.get('elapsed_seconds', 0.0)):>5.1f}s"
+            f"{int(item['valid_domains']):>6,}｜{int(item.get('unique_domains', 0)):>6,}｜"
+            f"{int(item.get('duplicate_rows', 0)):>6,}｜"
+            f"{int(item.get('cross_page_duplicates', 0)):>6,}｜"
+            f"{int(item.get('unrecognized_rows', 0)):>6,}｜"
+            f"{int(item.get('row_read_failures', 0)):>6,}｜"
+            f"{int(item.get('skipped_rows', 0)):>6,}｜"
+            f"{page_elapsed:>6.2f}s"
+        )
+        print(
+            f"│   耗时拆分：数据处理 {read_elapsed:.3f}s｜"
+            f"截图诊断 {snapshot_elapsed:.3f}s｜翻页切换 {next_wait:.3f}s"
         )
         missing_latency = int(item.get("missing_latency", 0))
         missing_loss = int(item.get("missing_loss", 0))
@@ -1272,8 +1382,6 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
                 f"│   缺少测速信息：延迟 {missing_latency} 行｜"
                 f"丢包率 {missing_loss} 行｜速度 {missing_speed} 行"
             )
-        if item.get("row_read_failures"):
-            print(f"│   页面元素读取失败：{item['row_read_failures']} 行")
         if item.get("data_note"):
             print(f"│   数据状态：{item['data_note']}")
         if item.get("pagination_note"):
@@ -1295,9 +1403,20 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
         if item.get("pagination_note"):
             partial_notes.append(f"{page_label}：{item['pagination_note']}")
     print(
-        f"网页小计：读取 {total_rows:,} 行｜识别域名 {sum(int(item.get('valid_domains', 0)) for item in page_reports):,} 条｜"
+        f"网页小计：读取 {total_rows:,} 行｜有效识别 {valid_rows_total:,} 行｜"
         f"网页唯一 {unique_web:,} 个｜重复 {web_duplicates:,} 条｜"
-        f"跳过 {skipped_rows:,} 行｜网页耗时 {web_elapsed:.1f} 秒"
+        f"未识别 {unrecognized_rows_total:,} 行｜DOM 读取失败 {row_read_failures_total:,} 行｜"
+        f"总跳过 {skipped_rows:,} 行｜网页总耗时 {web_elapsed:.1f} 秒"
+    )
+    print(
+        f"网页数据核算：原始 {total_rows:,} 行 = 有效识别 {valid_rows_total:,} 行 + 跳过 {skipped_rows:,} 行；"
+        f"有效识别 {valid_rows_total:,} 行 = 网页唯一 {unique_web:,} 个 + 重复 {web_duplicates:,} 条。"
+    )
+    print("逐页采集耗时从当前页数据稳定后开始，包含读取、截图诊断及切换下一页；末页不包含下一页等待。")
+    print(
+        f"网页计时核对：逐页采集 {page_elapsed_total:.2f} 秒 + "
+        f"浏览器启动、打开网页、首屏稳定、重试及收尾 {web_setup_and_cleanup:.2f} 秒 "
+        f"= 网页总计 {web_elapsed:.2f} 秒。"
     )
     if partial_notes:
         print(f"网页状态：部分完成，已保留 {len(page_reports)} 页中成功读取的结果。")
