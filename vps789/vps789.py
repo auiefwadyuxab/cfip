@@ -46,6 +46,7 @@ TABLE_STABLE_SECONDS = 1.0
 TABLE_STABLE_POLL_SECONDS = 0.20
 TABLE_STABLE_MIN_SAMPLES = 4
 RETRY_COUNT = 3
+PaginationStatus = Literal["more", "last", "unknown"]
 API_RETRY_COUNT = 3
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -62,12 +63,12 @@ DATA_ROW_SELECTORS = (
 )
 DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 DOWNLOAD_SPEED_RE = re.compile(
-    r"(?P<number>-?\d+(?:\.\d+)?)\s*(?P<unit>KB|MB|GB|TB)\s*/\s*s\b",
+    r"(?<![-+−\d.])(?P<number>\d+(?:\.\d+)?)\s*(?P<unit>KB|MB|GB|TB)\s*/\s*s\b",
     re.IGNORECASE,
 )
 NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
-LATENCY_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*ms\b", re.IGNORECASE)
-LOSS_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
+LATENCY_RE = re.compile(r"(?<![-+−\d.])(\d+(?:\.\d+)?)\s*ms\b", re.IGNORECASE)
+LOSS_RE = re.compile(r"(?<![-+−\d.])(\d+(?:\.\d+)?)\s*%")
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,8 +143,8 @@ def format_number(value: object) -> str:
     return f"{number:.2f}".rstrip("0").rstrip(".")
 
 
-def parse_metric_number(value: object) -> str:
-    """将 API 的纯数字或带单位文本提取为非负数字。"""
+def parse_metric_number(value: object, *, maximum: float | None = None) -> str:
+    """将 API 的纯数字或带单位文本提取为有效的非负数字。"""
     if value is None or isinstance(value, bool):
         return ""
     match = NUMBER_RE.search(clean_text(str(value)))
@@ -153,7 +154,9 @@ def parse_metric_number(value: object) -> str:
         number = float(match.group(0))
     except ValueError:
         return ""
-    return format_number(number) if number >= 0 else ""
+    if number < 0 or (maximum is not None and number > maximum):
+        return ""
+    return format_number(number)
 
 
 def format_info(latency: str = "", loss: str = "", speed: str = "") -> str:
@@ -186,11 +189,12 @@ def get_row_cells(row: Locator) -> list[str]:
 
 
 def find_data_rows(page: Page) -> Locator:
+    """只选择当前可见的数据行，避免读到响应式布局留下的隐藏旧表格。"""
     for selector in DATA_ROW_SELECTORS:
-        locator = page.locator(selector)
+        locator = page.locator(selector).filter(visible=True)
         if locator.count() > 0:
             return locator
-    return page.locator("table tbody tr")
+    return page.locator("table tbody tr").filter(visible=True)
 
 
 def row_signature(rows: Locator, limit: int | None = 3) -> tuple[str, ...]:
@@ -255,7 +259,7 @@ def wait_until(deadline: float, predicate, interval: float = 0.10) -> bool:
 
 
 def wait_for_first_data_row(page: Page) -> Locator:
-    rows = page.locator(",".join(DATA_ROW_SELECTORS))
+    rows = find_data_rows(page)
     deadline = time.monotonic() + TABLE_TIMEOUT_MS / 1000
 
     def ready() -> bool:
@@ -293,9 +297,11 @@ def extract_telecom_metric(cells: list[str]) -> tuple[str, str, int]:
         if not loss:
             match = LOSS_RE.search(cell)
             if match:
-                loss = format_number(match.group(1))
-                if metric_index < 0:
-                    metric_index = index
+                candidate_loss = float(match.group(1))
+                if 0 <= candidate_loss <= 100:
+                    loss = format_number(candidate_loss)
+                    if metric_index < 0:
+                        metric_index = index
         if latency and loss:
             break
     return latency, loss, metric_index
@@ -352,17 +358,21 @@ def active_page_marker(page: Page) -> str:
     return ""
 
 
-def inspect_pagination_state(page: Page) -> tuple[bool, bool, str]:
-    """返回 (是否存在可识别分页控件, 是否确认还有后续页, 依据)。
+def inspect_pagination_state(
+    page: Page,
+    total_count: int | None = None,
+    page_size: int | None = None,
+) -> tuple[bool, PaginationStatus, str]:
+    """返回 (是否存在分页控件, MORE/LAST/UNKNOWN, 判断依据)。
 
-    只对 Element/ElementPlus 分页 DOM 作判断。若页面没有分页控件，或虽有
-    控件但无法从页码/总数确定还有后续页，就不把“未找到下一页按钮”误报为异常。
+    UNKNOWN 与 LAST 必须分开：没有找到下一页按钮，不等于已经确认到达末页。
+    如果页面没有分页控件，则按单页表格处理；存在分页控件但证据不足时标记为未知。
     """
-    script = r"""() => {
+    script = r"""(known) => {
       const roots = Array.from(document.querySelectorAll('.el-pagination'))
         .filter(root => root.getClientRects().length > 0);
       if (!roots.length) {
-        return { present: false, hasMore: false, evidence: '未检测到可见的 .el-pagination 控件' };
+        return { present: false, status: 'last', evidence: '未检测到可见分页控件，按单页表格处理' };
       }
 
       const toNumber = value => {
@@ -380,6 +390,7 @@ def inspect_pagination_state(page: Page) -> tuple[bool, bool, str]:
           : '';
         const jumpInput = root.querySelector('.el-pagination__jump input');
         const currentPage = toNumber(activeText) || (jumpInput ? toNumber(jumpInput.value) : null);
+
         const pageItems = Array.from(root.querySelectorAll(
           '.el-pager li.number, .el-pager [data-page], .el-pager a, .el-pager button'
         ));
@@ -392,91 +403,106 @@ def inspect_pagination_state(page: Page) -> tuple[bool, bool, str]:
         if (laterPage !== undefined) {
           return {
             present: true,
-            hasMore: true,
+            status: 'more',
             evidence: `页码列表显示当前第 ${currentPage} 页之后还有第 ${laterPage} 页`
           };
         }
 
-        const totalElement = root.querySelector('.el-pagination__total');
-        const totalText = totalElement ? (totalElement.innerText || totalElement.textContent || '') : '';
-        const total = toNumber(totalText);
-        const sizeElement = root.querySelector('.el-pagination__sizes');
-        let pageSize = null;
-        if (sizeElement) {
-          const candidates = [
-            ...Array.from(sizeElement.querySelectorAll('input, select'))
-              .map(item => item.value || item.getAttribute('value') || ''),
-            sizeElement.innerText || sizeElement.textContent || ''
-          ];
-          for (const candidate of candidates) {
-            const sizeMatch = String(candidate).replace(/,/g, '').match(/(\d+)\s*(?:条\s*\/\s*页|条\/页|\/页)/);
-            const numericValue = sizeMatch ? Number(sizeMatch[1]) : toNumber(candidate);
-            if (numericValue && numericValue > 0) {
-              pageSize = numericValue;
-              break;
-            }
+        if (currentPage !== null && known.totalCount !== null && known.pageSize > 0) {
+          const totalPages = Math.ceil(known.totalCount / known.pageSize);
+          if (totalPages > currentPage) {
+            return {
+              present: true,
+              status: 'more',
+              evidence: `总记录数 ${known.totalCount}、每页 ${known.pageSize} 条，当前第 ${currentPage} 页，共 ${totalPages} 页`
+            };
           }
-        }
-        if (total !== null && pageSize && currentPage !== null && Math.ceil(total / pageSize) > currentPage) {
           return {
             present: true,
-            hasMore: true,
-            evidence: `总记录数 ${total}、每页 ${pageSize} 条，当前第 ${currentPage} 页`
+            status: 'last',
+            evidence: `总记录数 ${known.totalCount}、每页 ${known.pageSize} 条，当前第 ${currentPage} 页已到末页`
           };
         }
 
         const declaredPageCount = toNumber(
           root.getAttribute('data-page-count') || root.getAttribute('page-count')
         );
-        if (declaredPageCount && currentPage !== null && declaredPageCount > currentPage) {
+        if (declaredPageCount !== null && currentPage !== null) {
           return {
             present: true,
-            hasMore: true,
-            evidence: `分页控件声明总页数 ${declaredPageCount}，当前第 ${currentPage} 页`
+            status: declaredPageCount > currentPage ? 'more' : 'last',
+            evidence: `分页控件声明共 ${declaredPageCount} 页，当前第 ${currentPage} 页`
+          };
+        }
+
+        const next = root.querySelector(
+          'button.btn-next, .btn-next, button[aria-label*="下一页"], button[aria-label*="Next"]'
+        );
+        if (next) {
+          const classes = String(next.className || '').toLowerCase();
+          const disabled = Boolean(next.disabled)
+            || String(next.getAttribute('aria-disabled') || '').toLowerCase() === 'true'
+            || classes.includes('is-disabled');
+          return {
+            present: true,
+            status: disabled ? 'last' : 'more',
+            evidence: disabled ? '分页控件的下一页按钮已禁用' : '分页控件的下一页按钮可用'
           };
         }
       }
-      return { present: true, hasMore: false, evidence: '存在分页控件，但当前 DOM 未能可靠确认还有后续页' };
+
+      return {
+        present: true,
+        status: 'unknown',
+        evidence: '存在分页控件，但无法确认是否已经到达末页'
+      };
     }"""
     try:
-        state = page.evaluate(script)
+        state = page.evaluate(
+            script,
+            {
+                "totalCount": total_count,
+                "pageSize": page_size or 0,
+            },
+        )
         if isinstance(state, dict):
+            status = state.get("status")
+            if status not in {"more", "last", "unknown"}:
+                status = "unknown"
             return (
                 bool(state.get("present")),
-                bool(state.get("hasMore")),
+                status,  # type: ignore[return-value]
                 clean_text(str(state.get("evidence") or "")),
             )
     except Exception as exc:
-        # If DOM inspection itself fails, remain conservative: do not infer a
-        # pagination failure from an inspection failure alone.
         try:
-            present = page.locator(".el-pagination").count() > 0
+            present = page.locator(".el-pagination").filter(visible=True).count() > 0
         except Exception:
-            present = False
-        return present, False, f"分页 DOM 检查失败：{type(exc).__name__}"
-    return False, False, "未取得分页状态"
+            present = True
+        return (
+            present,
+            "unknown",
+            f"分页状态检查失败：{type(exc).__name__}",
+        )
+    return False, "unknown", "未取得分页状态"
 
 
-def row_host_signature(rows: Locator) -> tuple[str, ...]:
-    """读取整页所有行的域名列，作为页面内容指纹，而非只抽样首尾几行。"""
+def row_data_signature(rows: Locator) -> tuple[str, ...]:
+    """读取每行完整单元格文本，避免域名不在第一列时误判页面未变化。"""
     try:
         values = rows.evaluate_all(
             "elements => elements.map(row => { "
-            "const cell = row.querySelector('.table-file-name') || row.querySelector('td'); "
-            "return cell ? (cell.innerText || cell.textContent || '') : ''; })"
+            "const cells = Array.from(row.querySelectorAll('td')).map(cell => "
+            "(cell.innerText || cell.textContent || '').replace(/\\s+/g, ' ').trim()); "
+            "return cells.length ? cells.join(' | ') : "
+            "(row.innerText || row.textContent || '').replace(/\\s+/g, ' ').trim(); })"
         )
         return tuple(clean_text(str(value or "")) for value in values)
     except Exception:
         # 兼容少数无法执行 evaluate_all 的 Locator；慢速逐行读取只作回退。
         values: list[str] = []
         for index in range(rows.count()):
-            row = rows.nth(index)
-            host_cell = row.locator(".table-file-name").first
-            if host_cell.count():
-                values.append(clean_text(host_cell.inner_text()))
-                continue
-            cell = row.locator("td").first
-            values.append(clean_text(cell.inner_text()) if cell.count() else "")
+            values.append(clean_text(rows.nth(index).inner_text()))
         return tuple(values)
 
 
@@ -531,7 +557,7 @@ def wait_for_stable_table(
     expected_row_count: int | None,
     timeout_ms: int,
 ) -> tuple[str, ...] | None:
-    """等待完整域名序列刷新并稳定；活动页码变化本身绝不视为完成。"""
+    """等待整页行数据刷新并稳定；仅页码变化不足以确认表格已更新。"""
     deadline = time.monotonic() + timeout_ms / 1000
     stable_signature: tuple[str, ...] | None = None
     stable_since = 0.0
@@ -539,7 +565,7 @@ def wait_for_stable_table(
 
     while time.monotonic() < deadline:
         try:
-            signature = row_host_signature(rows)
+            signature = row_data_signature(rows)
             row_count = rows.count()
             current_page = parse_page_number(active_page_marker(page))
             loading = table_loading_visible(page)
@@ -617,6 +643,30 @@ def save_page_snapshot(page: Page, diagnostics_dir: Path, page_no: int, suffix: 
         print(f"[诊断] 第 {page_no} 页 HTML 保存失败：{type(exc).__name__}: {exc}")
 
 
+def find_next_page_button(page: Page) -> Locator:
+    """优先选择可见分页区的下一页控件，避免误选隐藏或无关按钮。"""
+    for selector in (
+        ".el-pagination button.btn-next",
+        ".el-pagination .btn-next",
+        "button.btn-next",
+    ):
+        locator = page.locator(selector).filter(visible=True)
+        if locator.count() > 0:
+            return locator.first
+    return page.locator(".el-pagination .btn-next").filter(visible=True).first
+
+
+def add_page_note(
+    page_reports: list[dict[str, object]],
+    key: str,
+    note: str,
+) -> None:
+    if not page_reports:
+        return
+    existing = str(page_reports[-1].get(key) or "")
+    page_reports[-1][key] = f"{existing}；{note}" if existing else note
+
+
 def collect_page_domains(page: Page, diagnostics_dir: Path,
                          page_reports: list[dict[str, object]]) -> dict[str, DomainRecord]:
     wait_for_first_data_row(page)
@@ -660,8 +710,7 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
                 raise RuntimeError("第一页没有找到表格行。")
             note = "翻页后表格没有有效行；保留此前已抓取页面并停止后续翻页。"
             print(f"[网页] {note}")
-            if page_reports:
-                page_reports[-1]["pagination_note"] = note
+            add_page_note(page_reports, "pagination_note", note)
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-empty-after-next")
             break
 
@@ -717,6 +766,13 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
                 )
         cross_page_duplicates += page_cross_duplicates
 
+        unrecognized_rows = max(0, row_count - valid_rows - row_read_failures)
+        data_notes: list[str] = []
+        if row_read_failures:
+            data_notes.append(f"DOM 读取失败 {row_read_failures} 行")
+        if unrecognized_rows:
+            data_notes.append(f"未识别有效域名 {unrecognized_rows} 行")
+
         page_report = {
             "page": page_no,
             "raw_rows": row_count,
@@ -732,6 +788,8 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
             "elapsed_seconds": time.monotonic() - page_started,
             "skip_examples": skipped_examples,
         }
+        if data_notes:
+            page_report["data_note"] = "；".join(data_notes)
         page_reports.append(page_report)
         print(
             f"[网页] 第 {page_no} 页：原始 {row_count} 行；识别域名 {valid_rows} 条；"
@@ -745,37 +803,49 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
             print("[网页] 跳过行示例：" + " || ".join(skipped_examples))
         save_page_snapshot(page, diagnostics_dir, page_no)
 
-        next_button = page.locator("button.btn-next").first
+        next_button = find_next_page_button(page)
         if next_button.count() == 0:
-            next_button = page.locator(
-                ".el-pagination button.btn-next, .el-pagination .btn-next"
-            ).first
-        if next_button.count() == 0:
-            pagination_present, has_more_pages, evidence = inspect_pagination_state(page)
-            if pagination_present and has_more_pages:
+            _, pagination_status, evidence = inspect_pagination_state(
+                page, total_count=total_count, page_size=page_size
+            )
+            if pagination_status == "more":
                 note = (
-                    "已确认页面仍有后续页，但未识别到下一页按钮；"
+                    "已确认页面仍有后续页，但未识别到可点击的下一页按钮；"
                     f"{evidence}。保留已抓取页面并停止后续翻页。"
                 )
+            elif pagination_status == "unknown":
+                note = (
+                    "无法确认分页是否已经到达末页；"
+                    f"{evidence}。本次结果按部分完成标记。"
+                )
+            else:
+                note = "未发现后续分页，已到最后一页。"
+            if pagination_status != "last":
                 print(f"[网页] {note}")
-                if page_reports:
-                    page_reports[-1]["pagination_note"] = note
-                save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-button-unrecognized")
+                add_page_note(page_reports, "pagination_note", note)
+                save_page_snapshot(page, diagnostics_dir, page_no, suffix="-pagination-unconfirmed")
             break
         try:
             class_text = (next_button.get_attribute("class") or "").casefold()
             aria_disabled = (next_button.get_attribute("aria-disabled") or "").casefold()
             if next_button.is_disabled() or aria_disabled == "true" or "is-disabled" in class_text:
+                _, pagination_status, evidence = inspect_pagination_state(
+                    page, total_count=total_count, page_size=page_size
+                )
+                if pagination_status == "more":
+                    note = f"下一页按钮已禁用，但分页信息仍显示有后续页；{evidence}。"
+                    print(f"[网页] {note}")
+                    add_page_note(page_reports, "pagination_note", note)
+                    save_page_snapshot(page, diagnostics_dir, page_no, suffix="-disabled-next-conflict")
                 break
         except PlaywrightError as exc:
             note = f"读取下一页按钮状态失败（{type(exc).__name__}）；保留已抓取页面并停止后续翻页。"
             print(f"[网页] {note}")
-            if page_reports:
-                page_reports[-1]["pagination_note"] = note
+            add_page_note(page_reports, "pagination_note", note)
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-state-failed")
             break
 
-        old_signature = row_host_signature(rows)
+        old_signature = row_data_signature(rows)
         old_page_marker = active_page_marker(page)
         old_page_number = parse_page_number(old_page_marker)
         target_page = old_page_number + 1 if old_page_number is not None else None
@@ -785,8 +855,7 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
         except PlaywrightError as exc:
             note = f"点击下一页失败（{type(exc).__name__}）；保留已抓取页面并停止后续翻页。"
             print(f"[网页] {note}")
-            if page_reports:
-                page_reports[-1]["pagination_note"] = note
+            add_page_note(page_reports, "pagination_note", note)
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-click-failed")
             break
         if not wait_for_page_change(
@@ -807,10 +876,18 @@ def collect_page_domains(page: Page, diagnostics_dir: Path,
                 "保留已抓取页面并停止后续翻页。"
             )
             print(f"[网页] {note}")
-            if page_reports:
-                page_reports[-1]["pagination_note"] = note
+            add_page_note(page_reports, "pagination_note", note)
             save_page_snapshot(page, diagnostics_dir, page_no, suffix="-next-timeout")
             break
+
+    captured_rows = sum(int(item.get("raw_rows", 0)) for item in page_reports)
+    if total_count is not None and captured_rows != total_count:
+        note = (
+            f"网页分页声明共 {total_count} 行，实际读取 {captured_rows} 行；"
+            "本次结果按部分完成标记。"
+        )
+        print(f"[网页] {note}")
+        add_page_note(page_reports, "pagination_note", note)
 
     print(f"[网页] 所有已取得页面合并后唯一域名：{len(all_records)}；跨页重复：{cross_page_duplicates}。")
     # Keep the insertion-ordered dictionary through the API merge and writer;
@@ -935,7 +1012,7 @@ def fetch_top20_api() -> list[DomainRecord]:
                     invalid_items += 1
                     continue
                 latency = parse_metric_number(item.get("dxLatency"))
-                loss = parse_metric_number(item.get("dxPkgLostRate"))
+                loss = parse_metric_number(item.get("dxPkgLostRate"), maximum=100)
                 record = DomainRecord(
                     host=host,
                     info=format_info(latency=latency, loss=loss, speed=""),
@@ -1197,6 +1274,8 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
             )
         if item.get("row_read_failures"):
             print(f"│   页面元素读取失败：{item['row_read_failures']} 行")
+        if item.get("data_note"):
+            print(f"│   数据状态：{item['data_note']}")
         if item.get("pagination_note"):
             print(f"│   翻页状态：{item['pagination_note']}")
         if item.get("skip_examples"):
@@ -1208,19 +1287,22 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
         for note in retry_notes:
             print(f"  · {note}")
 
-    pagination_notes = [
-        str(item["pagination_note"])
-        for item in page_reports
-        if item.get("pagination_note")
-    ]
+    partial_notes: list[str] = []
+    for item in page_reports:
+        page_label = f"第 {int(item['page'])} 页"
+        if item.get("data_note"):
+            partial_notes.append(f"{page_label}：{item['data_note']}")
+        if item.get("pagination_note"):
+            partial_notes.append(f"{page_label}：{item['pagination_note']}")
     print(
         f"网页小计：读取 {total_rows:,} 行｜识别域名 {sum(int(item.get('valid_domains', 0)) for item in page_reports):,} 条｜"
         f"网页唯一 {unique_web:,} 个｜重复 {web_duplicates:,} 条｜"
         f"跳过 {skipped_rows:,} 行｜网页耗时 {web_elapsed:.1f} 秒"
     )
-    if pagination_notes:
-        print(f"网页状态：部分分页，已保留 {len(page_reports)} 页有效结果。")
-        print(f"停止原因：{pagination_notes[-1]}")
+    if partial_notes:
+        print(f"网页状态：部分完成，已保留 {len(page_reports)} 页中成功读取的结果。")
+        for note in partial_notes:
+            print(f"  · {note}")
     else:
         print(f"网页状态：正常完成，共处理 {len(page_reports)} 页。")
 
@@ -1248,10 +1330,11 @@ def run_scrape(args: argparse.Namespace, output_dir: Path, diagnostics_dir: Path
     print(f"│ {'all.txt':<10} {len(merged) * len(PORTS):>8,} 条记录｜{all_path.stat().st_size:,} bytes")
     elapsed = time.monotonic() - started
     print(f"分项耗时：网页 {web_elapsed:.1f}s｜API {api_elapsed:.1f}s｜文件写入 {output_elapsed:.1f}s")
-    if pagination_notes:
-        print("注意：本次网页分页未完整到达末页，端口文件按已抓取页面与 API 结果生成。")
+    if partial_notes:
+        print("注意：本次网页抓取存在部分未读取或未确认的数据；端口文件仍按已取得网页与 API 结果生成。")
     print("\n" + rule)
-    print(f"✓ 抓取完成｜唯一域名 {len(merged):,} 个｜总耗时 {elapsed:.1f} 秒")
+    completion_label = "✓ 抓取完成（部分结果已标记）" if partial_notes else "✓ 抓取完成"
+    print(f"{completion_label}｜唯一域名 {len(merged):,} 个｜总耗时 {elapsed:.1f} 秒")
     print(rule)
     return 0
 
